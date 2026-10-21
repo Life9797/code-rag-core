@@ -3,7 +3,7 @@
 - Document version: v0.4-P6 (design only, no implementation). Supersedes v0.4-P5 as the reference; P1-P5 stay in `coreplan/` unchanged. Every section is authoritative; each behavior is defined in one place and other sections point to it.
 - System version: v0.4. The previous implementation (v0.2.4) stays in the `code-rag` repository.
 - Repository: `code-rag-core`.
-- Written by: Claude, 2026-10-21 22:40 KST.
+- Written by: Claude, 2026-10-21 22:31 KST.
 - Estimated design progress: specified about 85%, implemented about 5% (DDL only), tested about 3% (§21). Adoption (D-35) sets the reference design; it does not raise the implemented or tested figures.
 
 ## 0. How to read this document
