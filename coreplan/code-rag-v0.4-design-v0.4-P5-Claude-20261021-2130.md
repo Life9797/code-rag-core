@@ -61,11 +61,11 @@ Working rules for this design (Dy): replies in English (decision items may be Ko
 | D-23 | The miniweb files tool is handled later, together with the Nextcloud/WebDAV connector work (L-16); not in the P4 scope | T2 08:13 |
 | D-24 | Posted reviews are reference material, not the reference design; P3 is the base and only needed changes are made | T2 08:13 |
 | D-25 | Open WebUI interim access rule (O-14) and plugin trust model (O-15) stay on hold | T2 08:18 (decision card) |
-| D-26 | Work token-light: short replies, design detail in the document | T2 20:31, 21:34 |
+| D-26 | Work token-light: short replies, design detail in the document | T2 20:31, 21:26 |
 | D-27 | Pasted code and attachments in chat are handled from plain-language requests (§29) | T2 20:57 |
 | D-28 | When the code language of a paste or attachment is unclear, ask the user first, then process (§29) | T2 20:58 |
-| D-29 | The O-05 vector measurement may run before implementation (exception to D-13) | T2 21:00 (decision card), 21:05 |
-| D-30 | Continue until 23:00 KST under D-22 | T2 21:35 |
+| D-29 | The O-05 vector measurement may run before implementation (exception to D-13) | T2 21:00 (decision card), 21:04 |
+| D-30 | Continue until 23:00 KST under D-22 | T2 21:27 |
 
 ## 2. Layers (PROP)
 
