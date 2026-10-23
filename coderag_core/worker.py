@@ -15,6 +15,8 @@ STAGE_OPS = {
     "put_representation": ("knowledge", ("rep_kind", "config_hash", "input_hash", "unit_version_id", "chunk_id", "vec", "body")),
     "mark_units": ("knowledge", ("mode", "kind", "keys", "reason")),
     "put_job_item": ("runtime", ("key", "status", "code", "detail")),
+    "get_values": ("knowledge", ("rep_kind", "config_hash", "input_hashes")),
+    "task_input": ("runtime", ()),
 }
 JSON_ARGS = {"attrs", "chunks", "detail", "result", "children"}
 
@@ -58,6 +60,9 @@ class TaskCtx:
                             vec=None if vec is None else "[" + ",".join(map(str, vec)) + "]", body=body)
     def touch(self, kind, keys): return self.b.stage("mark_units", self.task, mode="touch", kind=kind, keys=list(keys))
     def hold(self, kind, keys, reason): return self.b.stage("mark_units", self.task, mode="hold", kind=kind, keys=list(keys), reason=reason)
+    def get_values(self, rep_kind, config_hash, input_hashes):
+        return self.b.stage("get_values", self.task, rep_kind=rep_kind, config_hash=config_hash, input_hashes=list(input_hashes))["values"]
+    def task_input(self): return self.b.stage("task_input", self.task)
     def put_job_item(self, key, status, code=None, detail=None):
         return self.b.stage("put_job_item", self.task, key=key, status=status, code=code, detail=detail or {})
 

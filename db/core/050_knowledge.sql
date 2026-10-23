@@ -54,7 +54,8 @@ BEGIN
     SELECT * INTO staged FROM knowledge.unit_versions WHERE unit_id = uid AND candidate_job = j.id AND valid_from_gen IS NULL;
     IF FOUND THEN
         RETURN core.res(CASE WHEN staged.content_hash = _content_hash THEN 'REPLAY' ELSE 'CONFLICT' END,
-                        jsonb_build_object('unit_version_id', staged.id));
+                        jsonb_build_object('unit_version_id', staged.id, 'chunk_ids',
+                            (SELECT coalesce(jsonb_object_agg(ordinal, id), '{}') FROM knowledge.chunks WHERE unit_version_id = staged.id)));
     END IF;
     INSERT INTO knowledge.candidate_keys (job_id, unit_id, mode) VALUES (j.id, uid, 'touch') ON CONFLICT DO NOTHING;
     SELECT * INTO openv FROM knowledge.unit_versions WHERE unit_id = uid AND valid_from_gen IS NOT NULL AND valid_to_gen IS NULL;
@@ -89,17 +90,25 @@ BEGIN
                      AND (uv.id = _unit_version OR c.id = _chunk)) THEN
         RETURN core.res('NOT_FOUND', '{"why": "target is not staged by this job"}');
     END IF;
-    IF spec->>'value' = 'vector' THEN
-        BEGIN v := _vec::ext.vector; EXCEPTION WHEN OTHERS THEN RETURN core.res('OUTPUT_INVALID', '{"why": "vector"}'); END;
-        d := ext.vector_dims(v);
-        IF d <> (spec->>'dims')::int THEN RETURN core.res('DIM_MISMATCH', jsonb_build_object('expected', (spec->>'dims')::int, 'got', d)); END IF;
-    ELSIF _body IS NULL THEN RETURN core.res('OUTPUT_INVALID', '{"why": "body"}');
+    IF _vec IS NULL AND _body IS NULL THEN                         -- link an existing value (reuse after get_values)
+        SELECT id INTO vid FROM knowledge.representation_values
+            WHERE tenant_id = j.tenant_id AND rep_kind = _rep_kind AND config_hash = _config_hash AND input_hash = _input_hash;
+        IF vid IS NULL THEN RETURN core.res('NOT_FOUND', '{"why": "value"}'); END IF;
+    ELSE
+        IF spec->>'value' = 'vector' THEN
+            BEGIN v := _vec::ext.vector; EXCEPTION WHEN OTHERS THEN RETURN core.res('OUTPUT_INVALID', '{"why": "vector"}'); END;
+            d := ext.vector_dims(v);
+            IF d IS DISTINCT FROM (spec->>'dims')::int THEN
+                RETURN core.res('DIM_MISMATCH', jsonb_build_object('expected', (spec->>'dims')::int, 'got', d));
+            END IF;
+        ELSIF _body IS NULL THEN RETURN core.res('OUTPUT_INVALID', '{"why": "body"}');
+        END IF;
+        INSERT INTO knowledge.representation_values (tenant_id, rep_kind, config_hash, input_hash, dims, vec, body)
+            VALUES (j.tenant_id, _rep_kind, _config_hash, _input_hash, d, v, CASE WHEN v IS NULL THEN _body END)
+            ON CONFLICT (tenant_id, rep_kind, config_hash, input_hash) DO NOTHING;
+        SELECT id INTO vid FROM knowledge.representation_values
+            WHERE tenant_id = j.tenant_id AND rep_kind = _rep_kind AND config_hash = _config_hash AND input_hash = _input_hash;
     END IF;
-    INSERT INTO knowledge.representation_values (tenant_id, rep_kind, config_hash, input_hash, dims, vec, body)
-        VALUES (j.tenant_id, _rep_kind, _config_hash, _input_hash, d, v, CASE WHEN v IS NULL THEN _body END)
-        ON CONFLICT (tenant_id, rep_kind, config_hash, input_hash) DO NOTHING;
-    SELECT id INTO vid FROM knowledge.representation_values
-        WHERE tenant_id = j.tenant_id AND rep_kind = _rep_kind AND config_hash = _config_hash AND input_hash = _input_hash;
     SELECT value_id INTO cur FROM knowledge.representation_links
         WHERE rep_kind = _rep_kind AND config_hash = _config_hash
           AND unit_version_id IS NOT DISTINCT FROM _unit_version AND chunk_id IS NOT DISTINCT FROM _chunk;
@@ -107,6 +116,19 @@ BEGIN
     INSERT INTO knowledge.representation_links (tenant_id, rep_kind, config_hash, value_id, unit_version_id, chunk_id)
         VALUES (j.tenant_id, _rep_kind, _config_hash, vid, _unit_version, _chunk);
     RETURN core.res('OK');
+END $$;
+
+-- Reuse lookup (I-K2): which inputs already have a value in this tenant; text/json bodies returned, vectors as true.
+CREATE FUNCTION knowledge.get_values(_task uuid, _token uuid, _epoch bigint, _rep_kind text, _config_hash text, _input_hashes text[])
+RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+DECLARE e jsonb; j runtime.jobs;
+BEGIN
+    e := knowledge.lease_err(_task, _token, _epoch); IF e IS NOT NULL THEN RETURN e; END IF;
+    SELECT jb.* INTO j FROM runtime.jobs jb JOIN runtime.tasks t ON t.job_id = jb.id WHERE t.id = _task;
+    IF knowledge.registered('representation_kind', _rep_kind, j.plugin_id) IS NULL THEN RETURN core.res('NOT_REGISTERED'); END IF;
+    RETURN core.res('OK', jsonb_build_object('values', (SELECT coalesce(jsonb_object_agg(input_hash, coalesce(to_jsonb(body), 'true')), '{}')
+        FROM knowledge.representation_values WHERE tenant_id = j.tenant_id AND rep_kind = _rep_kind
+         AND config_hash = _config_hash AND input_hash = ANY (_input_hashes))));
 END $$;
 
 -- P-C3 hold (input temporarily missing; the open version stays) and batch touch (unchanged inputs).

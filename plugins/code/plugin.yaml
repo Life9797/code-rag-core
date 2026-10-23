@@ -1,0 +1,41 @@
+# code plugin (L-01, §31, §39). Pipeline index@1: parse (item, split) -> resolve (control) -> assemble (item, split) -> publish.
+id: code
+version: 0.1.0
+contract: 1
+requires: {core: ">=0.4 <0.5"}
+entry: plugins.code.main
+schema: plugin_code
+migrations: migrations/
+handlers: [{name: parse, kind: item}, {name: resolve, kind: control}, {name: assemble, kind: item}, {name: purge, kind: control}]
+resources: [{key: models, kind: http, breaker: true}]
+collections: [{key: code}]
+unit_kinds:
+  - {key: file}
+  - {key: symbol, parent_kind: code.file, required_representations: [code.embed, code.knowledge_embed]}
+representation_kinds:
+  - {key: summary, target: chunk, value: json, template_version: kp2}
+  - {key: embed, target: chunk, value: vector, dims: 1024, template_version: "1"}
+  - {key: knowledge_embed, target: chunk, value: vector, dims: 1024, template_version: "1"}
+exclusion_reasons: [{key: too_large}, {key: binary}, {key: empty_file}, {key: encoding_unsupported}, {key: llm_failed}]
+pipelines:
+  - {key: index, version: 1, collection: code, publish_mode: full, inputs: ["file_tree@^1"],
+     stages: [{key: parse, kind: item, handler: parse, split: {max_items: 10000, max_depth: 1}},
+              {key: resolve, kind: control, handler: resolve, depends_on: [parse]},
+              {key: assemble, kind: item, handler: assemble, resource: code.models, split: {max_items: 10000, max_depth: 1}, depends_on: [resolve]},
+              {key: publish, kind: publish, depends_on: [assemble]}]}
+policy_keys:
+  - {key: batch_files, type: int, min: 1, max: 1000}
+  - {key: max_file_bytes, type: int, min: 1, affects_output: true}
+  - {key: raw_fact_cap, type: int, min: 0, affects_output: true}
+  - {key: llm.enabled, type: bool, affects_output: true}
+  - {key: llm.context_max_items, type: int, min: 0, max: 200, affects_output: true}
+  - {key: llm.concurrency, type: int, min: 1, max: 64}
+  - {key: graph_gate, type: text}
+  - {key: graph_gate_drop, type: number, min: 0, max: 1}
+error_codes:
+  - {key: llm_unavailable, retryable: true, health_sample: true}
+  - {key: embed_unavailable, retryable: true, health_sample: true}
+  - {key: parse_missing, retryable: true, health_sample: false}
+  - {key: stage_write_failed, retryable: true, health_sample: false}
+  - {key: graph_quality_blocked, retryable: false, health_sample: false}
+hooks: {purge_project: purge}

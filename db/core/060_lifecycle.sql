@@ -175,3 +175,16 @@ END $$;
 CREATE FUNCTION knowledge.gc_all() RETURNS jsonb
 LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
     SELECT coalesce(jsonb_object_agg(id, knowledge.gc(id)), '{}') FROM knowledge.collections $$;
+
+-- Worker input: the job's source revision (storage_ref + manifest) for a live lease.
+CREATE FUNCTION runtime.task_input(_task uuid, _token uuid, _epoch bigint) RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+DECLARE e jsonb; r core.source_revisions;
+BEGIN
+    e := knowledge.lease_err(_task, _token, _epoch); IF e IS NOT NULL THEN RETURN e; END IF;
+    SELECT sr.* INTO r FROM core.source_revisions sr JOIN runtime.jobs jb ON jb.source_revision_id = sr.id
+        JOIN runtime.tasks t ON t.job_id = jb.id WHERE t.id = _task;
+    IF NOT FOUND THEN RETURN core.res('NOT_FOUND', '{"what": "revision"}'); END IF;
+    RETURN core.res('OK', jsonb_build_object('revision_id', r.id, 'source_id', r.source_id, 'revision_key', r.revision_key,
+        'storage_ref', r.storage_ref, 'manifest', r.manifest, 'input_complete', r.input_complete));
+END $$;
