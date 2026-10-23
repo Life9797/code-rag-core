@@ -1,8 +1,8 @@
 """Core loops (§28.2): the runtime loop (start jobs, Core publish stage, finish non-publishing jobs) and the
 maintenance loop (sweep, breaker, indexes, GC, snapshot retention, project purge with plugin hooks). Each call
 uses its own login: runtime, maint, purge, and plugin_<id> for purge hooks (I-S1, I-P2)."""
-import importlib, logging, time
-from . import storage
+import base64, hashlib, hmac, importlib, json, logging, time
+from . import secrets, storage
 
 log = logging.getLogger("coderag.runner")
 
@@ -30,7 +30,36 @@ def maint_tick(connect, manifests=None, vol_root=None):
     for ref in pruned:
         if ref.startswith("vol://"): storage.remove(ref, vol_root)
     out["purge"] = purge(connect, manifests or {})
+    out["webhooks"] = deliver_webhooks(connect)
     return out
+
+
+def _post(url, body, headers):
+    import httpx
+    try:
+        r = httpx.post(url, content=body, headers=headers, timeout=10, follow_redirects=False)   # redirects are failures (ST-28)
+        return r.status_code
+    except httpx.HTTPError:
+        return None
+
+
+def deliver_webhooks(connect, post=_post, max=100):
+    """G1 M4: payload = ids only; X-CodeRag-Signature: t=<unix>,v1=hex(HMAC-SHA256(secret, "<t>.<body>")); event id for dedupe."""
+    done = {}
+    with connect("maint") as c:
+        for d in q(c, "SELECT core.webhook_due(%s)", max):
+            body = json.dumps({"id": d["event_id"], "type": d["type"], "created_at": d["created_at"], "data": d["payload"]},
+                              sort_keys=True).encode()
+            try: key = secrets.decrypt(d["key_id"], base64.b64decode(d["secret"]))
+            except (KeyError, ValueError, OSError):
+                log.warning("webhook %s: secret key %s not available", d["subscription_id"], d["key_id"]); continue
+            ts = str(int(time.time()))
+            sig = hmac.new(key.encode(), ts.encode() + b"." + body, hashlib.sha256).hexdigest()
+            st = post(d["url"], body, {"Content-Type": "application/json", "X-CodeRag-Event-Id": str(d["event_id"]),
+                                       "X-CodeRag-Signature": f"t={ts},v1={sig}"})
+            done[f"{d['event_id']}:{d['subscription_id']}"] = q(c, "SELECT core.webhook_mark(%s, %s, %s, %s)", d["event_id"],
+                                                               d["subscription_id"], st is not None and 200 <= st < 300, st)["outcome"]
+    return done
 
 
 def purge(connect, manifests):

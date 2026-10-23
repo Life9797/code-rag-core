@@ -5,7 +5,7 @@
 Env: CODERAG_ADMIN_DSN (init), CODERAG_DSN_BASE (+ user=<login>), CODERAG_PLUGINS, CODERAG_VOL_ROOT, CODERAG_KEYS_DIR."""
 import argparse, logging, os, sys, time
 import psycopg
-from . import api, auth, initdb, runner
+from . import api, auth, initdb, runner, secrets
 from .worker import Worker, SqlBinding
 
 log = logging.getLogger("coderag")
@@ -27,6 +27,7 @@ def main():
                 for (r,) in c.execute("SELECT rolname FROM pg_roles WHERE rolcanlogin AND rolname IN ('api', 'runtime', 'purge', 'maint') "
                                       "OR rolname LIKE 'plugin\\_%' AND rolcanlogin"):
                     c.execute(sql.SQL("ALTER ROLE {} PASSWORD {}").format(sql.Identifier(r), sql.Literal(pw)))
+        log.info("secrets key: %s", secrets.ensure_key())
         with api.Settings().connect("maint") as c:                 # MG-07: first key by the maint login
             if not c.execute("SELECT core.signing_key_active()").fetchone()[0]:
                 keys = os.environ.get("CODERAG_KEYS_DIR", "/data/keys"); os.makedirs(keys, exist_ok=True)

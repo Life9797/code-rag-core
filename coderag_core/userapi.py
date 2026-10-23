@@ -4,9 +4,10 @@ sha256, so the same upload twice is the same revision) -> optional job. Search a
 import hashlib, importlib, io, json, os, re, tempfile, uuid
 from fastapi import APIRouter, Depends, Request, UploadFile, File, Form
 from fastapi.responses import JSONResponse
-from . import files, storage
+import secrets as pysecrets
+from . import files, secrets, storage
 
-STATUS = {"FORBIDDEN": 403, "NOT_FOUND": 404, "INPUT_INVALID": 400, "REQUEST_ID_REUSED": 409, "PROJECT_DELETING": 409}
+STATUS = {"DESTINATION_NOT_ALLOWED": 400, "FORBIDDEN": 403, "NOT_FOUND": 404, "INPUT_INVALID": 400, "REQUEST_ID_REUSED": 409, "PROJECT_DELETING": 409}
 PASTE = re.compile(r"^[A-Za-z0-9_.\-/]{1,200}$")
 
 
@@ -55,6 +56,19 @@ def user_router(settings, claims, manifests) -> APIRouter:
     async def source(project: str, req: Request, cl=Depends(claims)):
         b = await body(req)
         return out(call("core.source_create", cl["sub"], project, b.get("connector", "core.upload"), b.get("external_id"), False, rid(b)))
+
+    @r.post("/projects/{project}/webhooks")
+    async def webhook(project: str, req: Request, cl=Depends(claims)):
+        """{url, event_types[]} -> id + HMAC secret (shown once; stored encrypted with the host key)."""
+        b = await body(req)
+        secret = pysecrets.token_urlsafe(32)
+        kid, ct = secrets.encrypt(secret)
+        res = call("core.webhook_subscribe", cl["sub"], project, b.get("url"), b.get("event_types") or ["knowledge.published"], kid, ct, rid(b))
+        return out({**res, "secret": secret} if res["outcome"] == "CREATED" and not res.get("replay") else res)
+
+    @r.delete("/webhooks/{sub}")
+    async def webhook_delete(sub: str, req: Request, cl=Depends(claims)):
+        b = await body(req); return out(call("core.webhook_unsubscribe", cl["sub"], sub, rid(b)))
 
     @r.post("/policies")
     async def policy(req: Request, cl=Depends(claims)):

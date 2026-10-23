@@ -54,3 +54,7 @@ GRANT EXECUTE ON FUNCTION core.delete_project(uuid, uuid, uuid), core.restore_pr
 GRANT EXECUTE ON FUNCTION core.purge_step(uuid), core.purge_hook_done(uuid, text), core.purge_due() TO purge;
 GRANT EXECUTE ON FUNCTION core.snapshot_retention(int), runtime.finish_done_jobs() TO maint, runtime;
 GRANT EXECUTE ON FUNCTION knowledge.gc_all() TO maint;
+
+-- webhooks (G1)
+GRANT EXECUTE ON FUNCTION core.webhook_subscribe(uuid, uuid, text, text[], text, bytea, uuid), core.webhook_unsubscribe(uuid, uuid, uuid) TO api;
+GRANT EXECUTE ON FUNCTION core.webhook_due(int), core.webhook_mark(bigint, uuid, boolean, int) TO maint;
