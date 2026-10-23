@@ -45,3 +45,10 @@ GRANT EXECUTE ON FUNCTION knowledge.delete_units(uuid, uuid, uuid, text, text[],
     knowledge.pin(uuid, uuid, interval), knowledge.unpin(uuid, uuid),
     knowledge.search(uuid, uuid[], uuid[], text, jsonb, jsonb, int, jsonb, boolean), runtime.job_items(uuid, uuid, text, int) TO api;
 GRANT EXECUTE ON FUNCTION knowledge.gc(uuid), knowledge.gc_values(uuid, int), knowledge.ensure_indexes() TO maint;
+
+-- lifecycle
+GRANT EXECUTE ON FUNCTION core.delete_project(uuid, uuid, uuid), core.restore_project(uuid, uuid, uuid),
+    core.revision_create(uuid, uuid, text, jsonb, text, text, boolean, uuid) TO api;
+GRANT EXECUTE ON FUNCTION core.purge_step(uuid), core.purge_hook_done(uuid, text), core.purge_due() TO purge;
+GRANT EXECUTE ON FUNCTION core.snapshot_retention(int), runtime.finish_done_jobs() TO maint, runtime;
+GRANT EXECUTE ON FUNCTION knowledge.gc_all() TO maint;

@@ -238,3 +238,28 @@ def test_tp14_retry_below_fence_floor(su, call, world, env):
     run(su, call, env, "tst", j2["job_id"], docs={"z": "zz"})
     call("maint", "knowledge.gc", j2["collection_id"])
     assert call.api("runtime.retry_job", world["A.op"], j, rid())["outcome"] == "RETRY_TOO_OLD"
+
+
+def test_tp01_concurrent_publishers_same_scope(su, base, call, world, env):
+    import threading
+    for _ in range(3):
+        j1 = create(call, world, env, "tst", "p", force=True)["job_id"]; call("runtime", "runtime.start_jobs", 50)
+        j2 = create(call, world, env, "tst", "p", force=True)["job_id"]; call("runtime", "runtime.start_jobs", 50)
+        payload(su, j1, docs={"a": f"one {j1}"}); payload(su, j2, docs={"a": f"two {j2}"})
+        env["tst"].drain()
+        gate, res = threading.Barrier(2), {}
+        def pub(j):
+            with connect(base, "runtime") as c:
+                gate.wait(); res[j] = c.execute("SELECT knowledge.publish(%s)", (j,)).fetchone()[0]["outcome"]
+        th = [threading.Thread(target=pub, args=(j,)) for j in (j1, j2)]
+        [t.start() for t in th]; [t.join() for t in th]
+        assert res[j2] == "PUBLISHED" and res[j1] in ("PUBLISHED", "SUPERSEDED", "STOPPED")
+        coll = su.execute("SELECT collection_id FROM runtime.jobs WHERE id = %s", (j1,)).fetchone()[0]
+        seqs = [r[0] for r in su.execute("SELECT j.seq FROM knowledge.generations g JOIN runtime.jobs j ON j.id = g.job_id "
+                                         "WHERE g.collection_id = %s ORDER BY g.gen", (coll,)).fetchall()]
+        assert seqs == sorted(seqs) and len(set(seqs)) == len(seqs)                    # PI-1
+        assert su.execute("SELECT max(n) FROM (SELECT count(*) n FROM knowledge.unit_versions uv JOIN knowledge.units u ON u.id = uv.unit_id "
+                          "WHERE u.collection_id = %s AND valid_from_gen IS NOT NULL AND valid_to_gen IS NULL GROUP BY uv.unit_id) x",
+                          (coll,)).fetchone()[0] == 1                                    # PI-3
+        assert visible(su, coll) == ["a"]
+        call("maint", "runtime.sweep", 100)

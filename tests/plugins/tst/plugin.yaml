@@ -13,4 +13,5 @@ unit_kinds: [{key: doc, required_representations: [tst.vec4]}]
 representation_kinds: [{key: vec4, target: chunk, value: vector, dims: 4}]
 exclusion_reasons: [{key: too_big}]
 pipelines:
+  - {key: ft, version: 1, collection: c, publish_mode: full, inputs: ["file_tree@^1"], stages: [{key: s, kind: item, handler: h}, {key: publish, kind: publish, depends_on: [s]}]}
   - {key: p, version: 1, collection: c, publish_mode: full, stages: [{key: s, kind: item, handler: h, resource: tst.emb}, {key: publish, kind: publish, depends_on: [s]}]}

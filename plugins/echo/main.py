@@ -33,7 +33,8 @@ def fan(ctx, task):
     return {"echo": key, "unit": r["outcome"]}
 
 
-def purge(ctx, task):
+def purge(db, project_id, info):
+    """G2 hook: echo keeps rows per task only; nothing is project-scoped, so this is a no-op (idempotent)."""
     return {}
 
 
