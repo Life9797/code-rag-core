@@ -80,4 +80,5 @@ def test_status_and_approve_routes(su, call, world, h):
     assert st["outcome"] == "OK" and "waiting_approval" in st
     r = c.post("/core/v1/jobs/00000000-0000-0000-0000-000000000000/approve", json={"stage": "gate"}, headers=A)
     assert r.status_code == 403
+    assert c.post("/core/v1/projects", json={"tenant": "TENANT", "name": "x"}, headers=A).status_code == 400
     assert c.post(f"/core/v1/tenants/{world['A']}/secrets", json={"connector": "tst.api"}, headers=A).status_code == 400

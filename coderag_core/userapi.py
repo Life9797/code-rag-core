@@ -1,6 +1,7 @@
 """Core user API (/core/v1): thin JSON mapping onto the SQL contracts as the `api` login, principal = token `sub`.
 Upload connector (§29, core.upload): zip or pasted files -> vol snapshot -> file_tree@1 revision (revision_key = content
 sha256, so the same upload twice is the same revision) -> optional job. Search adds each enabled plugin's query vectors."""
+import psycopg
 import hashlib, importlib, io, json, os, re, tempfile, uuid
 from fastapi import APIRouter, Depends, Request, UploadFile, File, Form
 from fastapi.responses import JSONResponse
@@ -15,9 +16,12 @@ def user_router(settings, claims, manifests) -> APIRouter:
     r = APIRouter(prefix="/core/v1")
 
     def call(fn, *args):
-        with settings.connect("api") as c:
-            return c.execute(f"SELECT {fn}({', '.join(['%s'] * len(args))})",
-                             [json.dumps(a) if isinstance(a, dict) else a for a in args]).fetchone()[0]
+        try:
+            with settings.connect("api") as c:
+                return c.execute(f"SELECT {fn}({', '.join(['%s'] * len(args))})",
+                                 [json.dumps(a) if isinstance(a, dict) else a for a in args]).fetchone()[0]
+        except psycopg.errors.DataError:                          # malformed id or value -> 400, not 500
+            return {"outcome": "INPUT_INVALID"}
 
     def out(res):
         return JSONResponse(res, STATUS.get(res.get("outcome"), 200))
