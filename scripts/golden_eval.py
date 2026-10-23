@@ -15,12 +15,16 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 def main():
     a = argparse.ArgumentParser()
     a.add_argument("--dsn", required=True); a.add_argument("--golden", required=True); a.add_argument("--vol", required=True)
-    a.add_argument("--repeats", type=int, default=1); a.add_argument("--k", type=int, default=10)
+    a.add_argument("--repeats", type=int, default=1); a.add_argument("--k", type=int, default=10); a.add_argument("--out")
     o = a.parse_args()
     storage.ROOT = o.vol
-    initdb.init(o.dsn, os.path.join(ROOT, "plugins"), log=lambda *_: None)
-    base = " ".join(p for p in o.dsn.split() if not p.startswith("user="))
-    cn = lambda login, ac=True: psycopg.connect(f"{base} user={login}", autocommit=ac)
+    db = dict(x.split("=", 1) for x in o.dsn.split())["dbname"]
+    with psycopg.connect(o.dsn.replace(f"dbname={db}", "dbname=postgres"), autocommit=True) as c:   # own database, never production
+        if not c.execute("SELECT 1 FROM pg_database WHERE datname = %s", (db,)).fetchone(): c.execute(f'CREATE DATABASE "{db}"')
+    initdb.init(o.dsn, os.environ.get("CODERAG_PLUGINS") or os.path.join(ROOT, "plugins"), log=lambda *_: None)
+    login_base = os.environ.get("CODERAG_DSN_BASE")              # deploy: logins use their own password
+    base = " ".join(p for p in (login_base or o.dsn).split() if not p.startswith(("user=", "dbname="))) + f" dbname={db}"
+    cn = lambda login, ac=True: psycopg.connect(f"{base} user={login}" if login != "postgres" else o.dsn, autocommit=ac)
     def api(fn, *args):
         with cn("api") as c: return c.execute(f"SELECT {fn}({', '.join(['%s'] * len(args))})", args).fetchone()[0]
     with cn("postgres") as su: admin = coreadm.bootstrap(su, f"eval-{uuid.uuid4().hex[:6]}")
@@ -63,6 +67,13 @@ def main():
         out = {lang: metrics.summarize(v) for lang, v in rows.items()}
         out["all"] = metrics.summarize([r for v in rows.values() for r in v])
         runs.append(out); print(f"repeat {rep + 1}:", json.dumps(out))
+    mean = {l: {m: round(sum(r[l][m] for r in runs) / len(runs), 4) for m in ("recall_at_k", "hit_at_k", "mrr", "p95_ms")}
+            for l in runs[0]}
+    spread = {l: round(max(r[l]["recall_at_k"] for r in runs) - min(r[l]["recall_at_k"] for r in runs), 4) for l in runs[0]}
+    res = {"mean": mean, "recall_spread": spread, "compare": evalmain.compare(mean, evalmain.BASELINE), "runs": runs}
+    print("mean:", json.dumps(mean), "\ncompare:", json.dumps(res["compare"]))
+    if o.out:
+        with open(o.out, "w") as f: json.dump(res, f, indent=1)
     return runs
 
 
