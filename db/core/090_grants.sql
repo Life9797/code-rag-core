@@ -34,3 +34,14 @@ GRANT EXECUTE ON FUNCTION runtime.claim(int, text[], uuid), runtime.heartbeat(uu
     runtime.split(uuid, uuid, bigint, jsonb, uuid) TO plugin_worker;
 GRANT EXECUTE ON FUNCTION runtime.start_jobs(int), runtime.sweep(int), runtime.finish_stopped_jobs(uuid) TO runtime, maint;
 GRANT EXECUTE ON FUNCTION runtime.breaker_eval() TO runtime, maint;
+
+-- knowledge
+GRANT EXECUTE ON FUNCTION knowledge.put_unit(uuid, uuid, bigint, text, text, text, jsonb, jsonb, text),
+    knowledge.put_representation(uuid, uuid, bigint, text, text, text, uuid, uuid, text, text),
+    knowledge.mark_units(uuid, uuid, bigint, text, text, text[], text),
+    runtime.put_job_item(uuid, uuid, bigint, text, text, text, jsonb) TO plugin_worker;
+GRANT EXECUTE ON FUNCTION knowledge.publish(uuid), knowledge.publish_ready(int) TO runtime;
+GRANT EXECUTE ON FUNCTION knowledge.delete_units(uuid, uuid, uuid, text, text[], uuid),
+    knowledge.pin(uuid, uuid, interval), knowledge.unpin(uuid, uuid),
+    knowledge.search(uuid, uuid[], uuid[], text, jsonb, jsonb, int, jsonb, boolean), runtime.job_items(uuid, uuid, text, int) TO api;
+GRANT EXECUTE ON FUNCTION knowledge.gc(uuid), knowledge.gc_values(uuid, int), knowledge.ensure_indexes() TO maint;

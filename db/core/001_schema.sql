@@ -556,7 +556,7 @@ CREATE TABLE knowledge.unit_versions (
     tenant_id       uuid NOT NULL,
     id              uuid NOT NULL DEFAULT uuidv7() UNIQUE,
     unit_id         uuid NOT NULL,
-    parent_version  uuid REFERENCES knowledge.unit_versions (id),
+    parent_version  uuid REFERENCES knowledge.unit_versions (id) ON DELETE SET NULL,   -- GC removes old versions
     content_hash    text NOT NULL,
     attrs           jsonb NOT NULL DEFAULT '{}',
     candidate_job   uuid REFERENCES runtime.jobs (id),   -- set while staged

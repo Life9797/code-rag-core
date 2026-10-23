@@ -9,6 +9,20 @@ class PluginError(Exception):
         super().__init__(code); self.code, self.detail = code, detail or {}
 
 
+# Stage writes (W6, G3): op -> (schema, argument names after the task's lease triple). Shared by both bindings.
+STAGE_OPS = {
+    "put_unit": ("knowledge", ("kind", "key", "content_hash", "attrs", "chunks", "on_behalf_of")),
+    "put_representation": ("knowledge", ("rep_kind", "config_hash", "input_hash", "unit_version_id", "chunk_id", "vec", "body")),
+    "mark_units": ("knowledge", ("mode", "kind", "keys", "reason")),
+    "put_job_item": ("runtime", ("key", "status", "code", "detail")),
+}
+JSON_ARGS = {"attrs", "chunks", "detail", "result", "children"}
+
+
+def sql_args(names, values):
+    return [json.dumps(v) if k in JSON_ARGS and v is not None else v for k, v in zip(names, values)]
+
+
 class SqlBinding:
     def __init__(self, conn): self.conn = conn          # the plugin's own login (plugin_<id>), autocommit
     def _call(self, fn, *args):
@@ -19,6 +33,11 @@ class SqlBinding:
     def complete(self, t, result, rid): return self._call("complete", t["task_id"], t["lease_token"], t["lease_epoch"], result, rid)
     def fail(self, t, code, detail, rid): return self._call("fail", t["task_id"], t["lease_token"], t["lease_epoch"], code, detail, rid)
     def split(self, t, children, rid): return self._call("split", t["task_id"], t["lease_token"], t["lease_epoch"], children, rid)
+    def stage(self, op, t, **kw):
+        schema, names = STAGE_OPS[op]
+        args = [t["task_id"], t["lease_token"], t["lease_epoch"]] + sql_args(names, [kw.get(n) for n in names])
+        ph = ", ".join(["%s"] * len(args))
+        return self.conn.execute(f"SELECT {schema}.{op}({ph})", args).fetchone()[0]
 
 
 class TaskCtx:
@@ -30,6 +49,17 @@ class TaskCtx:
         return self.split_result
     def heartbeat(self, checkpoint=None, extend=False):
         return self.b.heartbeat(self.task, checkpoint, extend)
+    def put_unit(self, kind, key, content_hash, attrs=None, chunks=None, on_behalf_of=None):
+        return self.b.stage("put_unit", self.task, kind=kind, key=key, content_hash=content_hash, attrs=attrs or {},
+                            chunks=chunks or [], on_behalf_of=on_behalf_of)
+    def put_representation(self, rep_kind, config_hash, input_hash, unit_version_id=None, chunk_id=None, vec=None, body=None):
+        return self.b.stage("put_representation", self.task, rep_kind=rep_kind, config_hash=config_hash, input_hash=input_hash,
+                            unit_version_id=unit_version_id, chunk_id=chunk_id,
+                            vec=None if vec is None else "[" + ",".join(map(str, vec)) + "]", body=body)
+    def touch(self, kind, keys): return self.b.stage("mark_units", self.task, mode="touch", kind=kind, keys=list(keys))
+    def hold(self, kind, keys, reason): return self.b.stage("mark_units", self.task, mode="hold", kind=kind, keys=list(keys), reason=reason)
+    def put_job_item(self, key, status, code=None, detail=None):
+        return self.b.stage("put_job_item", self.task, key=key, status=status, code=code, detail=detail or {})
 
 
 class Worker:
@@ -88,3 +118,4 @@ class HttpBinding:
     def fail(self, t, code, detail, rid):
         return self.post("/runtime/v1/fail", {**self._t(t), "error_code": code, "detail": detail, "request_id": rid})
     def split(self, t, children, rid): return self.post("/runtime/v1/split", {**self._t(t), "children": children, "request_id": rid})
+    def stage(self, op, t, **kw): return self.post(f"/runtime/v1/stage/{op}", {**self._t(t), **kw})

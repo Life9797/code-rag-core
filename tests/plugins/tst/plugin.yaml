@@ -9,5 +9,8 @@ migrations: migrations/
 handlers: [{name: h, kind: item}]
 resources: [{key: emb, kind: http, breaker: true}]
 collections: [{key: c}]
+unit_kinds: [{key: doc, required_representations: [tst.vec4]}]
+representation_kinds: [{key: vec4, target: chunk, value: vector, dims: 4}]
+exclusion_reasons: [{key: too_big}]
 pipelines:
   - {key: p, version: 1, collection: c, publish_mode: full, stages: [{key: s, kind: item, handler: h, resource: tst.emb}, {key: publish, kind: publish, depends_on: [s]}]}

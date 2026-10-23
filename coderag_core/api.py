@@ -4,6 +4,7 @@ import json, os
 import psycopg
 from fastapi import FastAPI, APIRouter, Depends, Header, HTTPException, Request
 from . import auth
+from .worker import STAGE_OPS, SqlBinding
 
 
 class Settings:
@@ -72,4 +73,11 @@ def worker_router(settings, claims) -> APIRouter:
         return handler
 
     for op in ARGS: r.add_api_route(f"/{op}", make(op), methods=["POST"])
+
+    @r.post("/stage/{op}")
+    async def stage(op: str, req: Request, cl=Depends(claims)):
+        if op not in STAGE_OPS: raise HTTPException(404)
+        body = await req.json()
+        with settings.connect(f"plugin_{plugin_of(cl)}") as c:
+            return SqlBinding(c).stage(op, body, **{k: body.get(k) for k in STAGE_OPS[op][1]})
     return r
