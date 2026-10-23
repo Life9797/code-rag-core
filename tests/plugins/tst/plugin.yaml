@@ -1,0 +1,12 @@
+# test-only second plugin (ST-06: one plugin login cannot read another plugin's schema)
+id: tst
+version: 0.1.0
+contract: 1
+requires: {core: ">=0.4 <0.5"}
+entry: tests.plugins.tst
+schema: plugin_tst
+migrations: migrations/
+handlers: [{name: h, kind: item}]
+collections: [{key: c}]
+pipelines:
+  - {key: p, version: 1, collection: c, publish_mode: full, stages: [{key: s, kind: item, handler: h}, {key: publish, kind: publish, depends_on: [s]}]}

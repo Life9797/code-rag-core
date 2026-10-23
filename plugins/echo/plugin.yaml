@@ -1,0 +1,18 @@
+# echo plugin (§32): proves Core genericity; drives EC-01..08.
+id: echo
+version: 0.1.0
+contract: 1
+requires: {core: ">=0.4 <0.5"}
+entry: plugins.echo.main
+schema: plugin_echo
+migrations: migrations/
+handlers: [{name: fan, kind: item}, {name: purge, kind: control}]
+collections: [{key: echo}]
+unit_kinds: [{key: item, required_representations: [echo.vec]}]
+representation_kinds: [{key: vec, target: unit, value: vector, dims: 8, model_ref: core.none, template_version: "1"}]
+pipelines:
+  - {key: run, version: 1, collection: echo, publish_mode: delta, inputs: [],
+     stages: [{key: fan, kind: item, handler: fan, split: {max_items: 4, max_depth: 2}}, {key: publish, kind: publish, depends_on: [fan]}]}
+policy_keys: [{key: fanout, type: int, min: 1, max: 8, affects_output: true}]
+error_codes: [{key: boom, retryable: true, health_sample: false}]
+hooks: {purge_project: purge}
