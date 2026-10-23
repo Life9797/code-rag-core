@@ -27,6 +27,8 @@ def _digest(salt_prefix, secret):
 
 def issue_token(conn, client_id, secret, ttl=3600):
     """POST /core/v1/token (client credentials). Returns a JWT or None (DENIED); the same work runs for unknown ids."""
+    try: client_id = str(uuid.UUID(str(client_id)))
+    except ValueError: client_id = str(uuid.UUID(int=0))          # malformed id: same work, then 401 (not a 500)
     with conn.cursor() as cur:
         cur.execute("SELECT core.get_client_salt(%s)", (client_id,))
         digest = _digest(cur.fetchone()[0], secret)

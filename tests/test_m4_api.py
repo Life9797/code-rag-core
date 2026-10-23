@@ -71,6 +71,7 @@ def test_upload_paste_job_search(base, su, call, world, h):
     bad = c.post(f"/core/v1/sources/{s}/revisions", json={"files": [{"path": "../x.py", "text": "x"}]}, headers=A)
     assert bad.status_code == 400
     assert c.get("/core/v1/projects").status_code == 401
+    assert c.post("/core/v1/token", data={"client_id": "", "client_secret": ""}).status_code == 401
     stop_project_jobs(su, p)
 
 
