@@ -20,9 +20,12 @@ KNOWN = {"java", "javascript", "js", "typescript", "ts", "go", "rust", "c", "cpp
 SAVE = re.compile(r"저장|등록|반영|인덱스|\bsave\b|\bregister\b|\bindex\b", re.I)
 STATUS = re.compile(r"끝났|상태|진행|\bstatus\b|\bdone\b|finished", re.I)
 LIST = re.compile(r"프로젝트\s*(목록|리스트)|list projects", re.I)
+CREATE = re.compile(r"([\w.-]+?)\s*(?:이라는|라는)?\s*(?:이름의\s*)?프로젝트\s*(?:를|을)?\s*(?:새로\s*)?(?:만들|생성)"
+                    r"|프로젝트\s*(?:를|을)?\s*([\w.-]+?)\s*(?:로|으로|이름으로)?\s*(?:만들|생성)"
+                    r"|create (?:a |new |a new )?project(?: named| called)?\s+['\"]?([\w.-]+)", re.I)
 ASK = "이 코드는 어떤 언어인가요?"
 KO = {"FORBIDDEN": "이 프로젝트에 접근 권한이 없습니다", "INPUT_INVALID": "입력 형식이 올바르지 않습니다",
-      "PROJECT_DELETING": "삭제 중인 프로젝트입니다", "TOO_LARGE": "첨부 파일이 너무 큽니다", "NO_PROJECT": "사용할 프로젝트가 없습니다",
+      "PROJECT_DELETING": "삭제 중인 프로젝트입니다", "TOO_LARGE": "첨부 파일이 너무 큽니다", "NO_PROJECT": "사용할 프로젝트가 없습니다", "NAME_TAKEN": "같은 이름의 프로젝트가 이미 있습니다",
       "UNSUPPORTED": "지금은 python 코드만 분석합니다", "ERROR": "code-rag 요청이 실패했습니다"}
 NONE = "code-rag는 연결되어 있지만 찾은 코드가 없습니다 (아직 분석된 코드가 없거나 검색어와 맞지 않음)"
 UPLOADS = "/app/backend/data/uploads"
@@ -276,7 +279,7 @@ class Tools:
     async def code_rag(self, request: str, __user__: dict = None, __metadata__: dict = None, __event_emitter__=None,
                        __messages__: list = None) -> str:
         """
-        code-rag: analyze code the user pasted, check job status ("끝났어?"), search analyzed code, or list projects.
+        code-rag: analyze code the user pasted, check job status ("끝났어?"), search analyzed code, list projects, or create a project ("shop 프로젝트 만들어줘").
         :param request: what the user asked, in their words.
         """
         meta, uv = __metadata__ or {}, (__user__ or {}).get("valves")
@@ -290,6 +293,18 @@ class Tools:
             return sys_msg.split("[code-rag]\n", 1)[-1] if "[code-rag]" in sys_msg else KO["ERROR"]
         c = Client(self.valves, self.transport)
         try:
+            m = CREATE.search(request)
+            if m:                                                         # "shop 프로젝트 만들어줘" -> project + code plugin on
+                name = next(g for g in m.groups() if g)
+                if name.lower() in ("새", "new", "a", "the", "코드"): return "만들 프로젝트 이름을 알려주세요 (예: shop 프로젝트 만들어줘)"
+                ps = await c.projects()
+                tenant = next((p["tenant_id"] for p in ps if p["id"] == self.valves.SCRATCH_PROJECT), ps[0]["tenant_id"] if ps else None)
+                if not tenant: return KO["NO_PROJECT"]
+                r = await c.req("POST", "/core/v1/projects", json={"tenant": tenant, "name": name, "request_id": sha("project", chat, name)})
+                if r.get("outcome") != "CREATED": return KO.get(r.get("outcome"), KO["ERROR"])
+                e = await c.req("POST", f"/core/v1/projects/{r['id']}/plugins/code", json={"request_id": sha("enable", r["id"])})
+                if e.get("outcome") != "OK": return KO.get(e.get("outcome"), KO["ERROR"])
+                return f"프로젝트 {name}을(를) 만들었습니다. '{name} 에 저장해줘'와 함께 코드를 붙여 넣으면 여기에 저장됩니다."
             if LIST.search(request):
                 return "\n".join(f"- {p['name']}" for p in await c.projects()) or "읽을 수 있는 프로젝트가 없습니다"
             proj, ask = await c.resolve(request, uv)

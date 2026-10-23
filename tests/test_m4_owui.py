@@ -106,3 +106,15 @@ def test_tool_uploads_paste_when_filter_off(base, env):
     assert "job " in out
     drive(base)
     assert "rebate" in tool(env["t"], "rebate paid order", chat="c13")
+
+
+def test_tool_creates_project(env, su, world):
+    name = f"new{env['tag']}"
+    assert "만들었습니다" not in tool(env["t"], f"x{name} 프로젝트 만들어줘")         # contributor client: FORBIDDEN
+    r, secret = issue_client(su, world["root"], world["A"], "owui-admin", 4)
+    t = owui.Tools(env["t"].transport); t.valves = env["t"].valves.model_copy(update={"CLIENT_ID": r["client_id"], "CLIENT_SECRET": secret})
+    env = {**env, "t": t}
+    assert "만들었습니다" in tool(env["t"], f"{name} 프로젝트 만들어줘")
+    assert owui.KO["NAME_TAKEN"] in tool(env["t"], f"{name} 프로젝트 만들어줘", chat="c2")
+    assert name in tool(env["t"], "프로젝트 목록 보여줘")
+    assert "이름" in tool(env["t"], "새 프로젝트 만들어줘")
