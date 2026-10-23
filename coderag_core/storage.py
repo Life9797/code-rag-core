@@ -1,6 +1,6 @@
 """Storage URIs (P-P10, P-P11, I-F1): vol://<volume>/<path> under CODERAG_VOL_ROOT (/data/vol); paths cannot escape
 their volume (no '..', no absolute paths, no symlink exits). A URI never grants access by itself."""
-import os, re, tempfile
+import os, re, shutil, tempfile
 
 ROOT = os.environ.get("CODERAG_VOL_ROOT", "/data/vol")
 
@@ -36,3 +36,7 @@ def write_bytes(uri, data, root=None):
 def remove(uri, root=None):
     try: os.remove(resolve(uri, root))
     except FileNotFoundError: pass
+
+
+def remove_tree(uri, root=None):
+    shutil.rmtree(resolve(uri, root), ignore_errors=True)

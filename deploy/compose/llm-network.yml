@@ -1,0 +1,7 @@
+# api, worker and embed join your vLLM's Docker network (LLM_NETWORK); Open WebUI on it reaches code-rag as coderag-api:8080.
+services:
+  api: { networks: { default: {}, llm: { aliases: [coderag-api] } } }
+  worker: { networks: { default: {}, llm: {} } }
+  embed: { networks: { default: {}, llm: { aliases: [coderag-embed] } } }
+networks:
+  llm: { external: true, name: "${LLM_NETWORK}" }

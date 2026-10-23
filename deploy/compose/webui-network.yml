@@ -1,0 +1,5 @@
+# api joins your Open WebUI's Docker network (WEBUI_NETWORK) when it is not LLM_NETWORK.
+services:
+  api: { networks: { default: {}, webui: { aliases: [coderag-api] } } }
+networks:
+  webui: { external: true, name: "${WEBUI_NETWORK}" }

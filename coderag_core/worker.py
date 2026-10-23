@@ -1,6 +1,6 @@
 """Worker Protocol v1 client (§6.2, D-15). Binding 1 = in-process SQL (SqlBinding); binding 2 = HTTP with the
 same messages (coderag_core.http_binding). Handlers get a TaskCtx and never touch runtime tables."""
-import importlib, json, uuid
+import importlib, json, os, threading, uuid
 
 
 class PluginError(Exception):
@@ -82,8 +82,22 @@ class Worker:
             self.run_task(t)
         return len(r.get("tasks", []))
 
+    HEARTBEAT_S = float(os.environ.get("CODERAG_HEARTBEAT_S", "30"))   # runtime.heartbeat START value (§41)
+
     def run_task(self, t):
         ctx = TaskCtx(self.b, t, self.db)
+        stop = threading.Event()
+        def beat():                                                # keeps the lease while the handler works (§33 grace)
+            while not stop.wait(self.HEARTBEAT_S):
+                try: self.b.heartbeat(t)
+                except Exception: pass
+        threading.Thread(target=beat, daemon=True).start()
+        try:
+            return self._run(ctx, t)
+        finally:
+            stop.set()
+
+    def _run(self, ctx, t):
         try:
             out = self.handlers[t["handler"].split(".", 1)[1]](ctx, t)
             if ctx.split_result is None:

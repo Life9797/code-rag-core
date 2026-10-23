@@ -5,6 +5,7 @@ import psycopg
 from fastapi import FastAPI, APIRouter, Depends, Header, HTTPException, Request
 from . import auth
 from .worker import STAGE_OPS, SqlBinding
+from .userapi import user_router
 
 
 class Settings:
@@ -14,7 +15,7 @@ class Settings:
     def connect(self, login): return psycopg.connect(self.dsn_for(login), autocommit=True)
 
 
-def create_app(settings: Settings) -> FastAPI:
+def create_app(settings: Settings, manifests=None) -> FastAPI:
     app = FastAPI(title="code-rag core", version="0.4.0")
 
     def claims(authorization: str = Header(default="")):
@@ -44,6 +45,7 @@ def create_app(settings: Settings) -> FastAPI:
         return {"db": "ok"}
 
     app.include_router(worker_router(settings, claims))
+    app.include_router(user_router(settings, claims, manifests if manifests is not None else load_manifests()))
     return app
 
 
@@ -81,3 +83,11 @@ def worker_router(settings, claims) -> APIRouter:
         with settings.connect(f"plugin_{plugin_of(cl)}") as c:
             return SqlBinding(c).stage(op, body, **{k: body.get(k) for k in STAGE_OPS[op][1]})
     return r
+
+
+def load_manifests(root=None):
+    """{plugin id: manifest} for every plugin folder (CODERAG_PLUGINS, default <repo>/plugins)."""
+    import glob
+    from . import manifest as mf
+    root = root or os.environ.get("CODERAG_PLUGINS") or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "plugins")
+    return {m["id"]: m for m in (mf.load(os.path.dirname(p)) for p in sorted(glob.glob(os.path.join(root, "*", "plugin.yaml"))))}

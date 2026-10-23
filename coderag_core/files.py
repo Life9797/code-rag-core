@@ -26,7 +26,7 @@ def _source_root(names):
     return next(iter(tops)) + "/" if len(tops) == 1 and all("/" in n for n in names) else ""
 
 
-def safe_extract(zip_path, dest_uri, root=None, limits=None):
+def safe_extract(zip_path, dest_uri, root=None, limits=None, strip_root=True):
     """Extract into vol:// dest_uri (wiped first); returns {format, files:[{path, sha256, size}]} sorted by path bytes."""
     lim = {**LIMITS, **(limits or {})}
     dest = storage.resolve(dest_uri, root)
@@ -42,7 +42,7 @@ def safe_extract(zip_path, dest_uri, root=None, limits=None):
         if len(members) > lim["max_files"]: raise InputError("file_count_limit", str(len(members)))
         if sum(m.file_size for m in members) > lim["max_total_bytes"]: raise InputError("total_size_limit")
         if not names: raise InputError("source_root_invalid", "no files")
-        root_dir, files = _source_root(names), []
+        root_dir, files = _source_root(names) if strip_root else "", []
         for m, name in zip(members, names):
             path = name[len(root_dir):]
             parts = path.split("/")

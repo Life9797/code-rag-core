@@ -24,7 +24,7 @@ GRANT EXECUTE ON FUNCTION
 TO api;
 
 -- maintenance
-GRANT EXECUTE ON FUNCTION core.signing_key_rotate(uuid, text, jsonb, text) TO maint;
+GRANT EXECUTE ON FUNCTION core.signing_key_rotate(uuid, text, jsonb, text), core.signing_key_active() TO maint;
 
 -- runtime: user contracts (api), Worker Protocol (plugin logins via plugin_worker), Core runner and maintenance
 GRANT EXECUTE ON FUNCTION runtime.create_job(uuid, uuid, text, text, uuid, boolean, uuid), runtime.get_job(uuid, uuid),
@@ -44,7 +44,8 @@ GRANT EXECUTE ON FUNCTION knowledge.put_unit(uuid, uuid, bigint, text, text, tex
 GRANT EXECUTE ON FUNCTION knowledge.publish(uuid), knowledge.publish_ready(int) TO runtime;
 GRANT EXECUTE ON FUNCTION knowledge.delete_units(uuid, uuid, uuid, text, text[], uuid),
     knowledge.pin(uuid, uuid, interval), knowledge.unpin(uuid, uuid),
-    knowledge.search(uuid, uuid[], uuid[], text, jsonb, jsonb, int, jsonb, boolean), runtime.job_items(uuid, uuid, text, int) TO api;
+    knowledge.search(uuid, uuid[], uuid[], text, jsonb, jsonb, int, jsonb, boolean), runtime.job_items(uuid, uuid, text, int),
+    core.list_projects(uuid), core.source_info(uuid, uuid, int) TO api;
 GRANT EXECUTE ON FUNCTION knowledge.gc(uuid), knowledge.gc_values(uuid, int), knowledge.ensure_indexes() TO maint;
 
 -- lifecycle
