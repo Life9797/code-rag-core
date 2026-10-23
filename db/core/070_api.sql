@@ -12,3 +12,13 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
                          'external_id', s.external_id))
                      FROM core.sources s WHERE s.id = _source AND core.authorize(_p, s.project_id, _min_role) IS NOT NULL),
                     core.res('FORBIDDEN')) $$;
+
+-- Latest jobs of a project (optionally one source), newest first; reader.
+CREATE FUNCTION runtime.list_jobs(_p uuid, _project uuid, _source uuid, _limit int) RETURNS jsonb
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+    SELECT CASE WHEN core.authorize(_p, _project, 1) IS NULL THEN core.res('FORBIDDEN') ELSE
+        core.res('OK', jsonb_build_object('jobs', coalesce((SELECT jsonb_agg(x ORDER BY x->>'created_at' DESC) FROM (
+            SELECT jsonb_build_object('job_id', j.id, 'source_id', j.source_id, 'status', j.status, 'outcome', j.outcome,
+                   'pipeline', j.plugin_id || '.' || j.pipeline_key, 'created_at', j.created_at, 'finished_at', j.finished_at) x
+            FROM runtime.jobs j WHERE j.project_id = _project AND (_source IS NULL OR j.source_id = _source)
+            ORDER BY j.created_at DESC LIMIT least(coalesce(_limit, 20), 100)) y), '[]'))) END $$;

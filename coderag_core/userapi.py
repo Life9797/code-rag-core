@@ -109,6 +109,10 @@ def user_router(settings, claims, manifests) -> APIRouter:
         return out(call("runtime.create_job", cl["sub"], b.get("project"), b.get("plugin"), b.get("pipeline"), b.get("revision"),
                         bool(b.get("force")), rid(b)))
 
+    @r.get("/projects/{project}/jobs")
+    def jobs(project: str, source: str = None, limit: int = 20, cl=Depends(claims)):
+        return out(call("runtime.list_jobs", cl["sub"], project, source, limit))
+
     @r.get("/jobs/{job}")
     def job_get(job: str, cl=Depends(claims)): return out(call("runtime.get_job", cl["sub"], job))
 

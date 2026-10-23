@@ -45,7 +45,7 @@ GRANT EXECUTE ON FUNCTION knowledge.publish(uuid), knowledge.publish_ready(int) 
 GRANT EXECUTE ON FUNCTION knowledge.delete_units(uuid, uuid, uuid, text, text[], uuid),
     knowledge.pin(uuid, uuid, interval), knowledge.unpin(uuid, uuid),
     knowledge.search(uuid, uuid[], uuid[], text, jsonb, jsonb, int, jsonb, boolean), runtime.job_items(uuid, uuid, text, int),
-    core.list_projects(uuid), core.source_info(uuid, uuid, int) TO api;
+    core.list_projects(uuid), core.source_info(uuid, uuid, int), runtime.list_jobs(uuid, uuid, uuid, int) TO api;
 GRANT EXECUTE ON FUNCTION knowledge.gc(uuid), knowledge.gc_values(uuid, int), knowledge.ensure_indexes() TO maint;
 
 -- lifecycle
