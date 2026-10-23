@@ -1,0 +1,68 @@
+"""Worker Protocol v1 client (§6.2, D-15). Binding 1 = in-process SQL (SqlBinding); binding 2 = HTTP with the
+same messages (coderag_core.http_binding). Handlers get a TaskCtx and never touch runtime tables."""
+import importlib, json, uuid
+
+
+class PluginError(Exception):
+    """Raise from a handler with a registered error code (<plugin>.<key> or core.*)."""
+    def __init__(self, code, detail=None):
+        super().__init__(code); self.code, self.detail = code, detail or {}
+
+
+class SqlBinding:
+    def __init__(self, conn): self.conn = conn          # the plugin's own login (plugin_<id>), autocommit
+    def _call(self, fn, *args):
+        ph = ", ".join(["%s"] * len(args))
+        return self.conn.execute(f"SELECT runtime.{fn}({ph})", [json.dumps(a) if isinstance(a, dict) or (isinstance(a, list) and a and isinstance(a[0], dict)) else a for a in args]).fetchone()[0]
+    def claim(self, max, versions, rid): return self._call("claim", max, versions, rid)
+    def heartbeat(self, t, checkpoint=None, extend=False): return self._call("heartbeat", t["task_id"], t["lease_token"], t["lease_epoch"], checkpoint, extend)
+    def complete(self, t, result, rid): return self._call("complete", t["task_id"], t["lease_token"], t["lease_epoch"], result, rid)
+    def fail(self, t, code, detail, rid): return self._call("fail", t["task_id"], t["lease_token"], t["lease_epoch"], code, detail, rid)
+    def split(self, t, children, rid): return self._call("split", t["task_id"], t["lease_token"], t["lease_epoch"], children, rid)
+
+
+class TaskCtx:
+    def __init__(self, binding, task, db):
+        self.b, self.task, self.db, self.split_result = binding, task, db, None
+        self.policy = task["policy"]
+    def split(self, children):
+        self.split_result = self.b.split(self.task, children, str(uuid.uuid4()))
+        return self.split_result
+    def heartbeat(self, checkpoint=None, extend=False):
+        return self.b.heartbeat(self.task, checkpoint, extend)
+
+
+class Worker:
+    def __init__(self, plugin_id, version, handlers, binding, db=None):
+        self.plugin, self.version, self.handlers, self.b, self.db = plugin_id, version, handlers, binding, db
+
+    @classmethod
+    def load(cls, manifest, binding, db=None):
+        mod = importlib.import_module(manifest["entry"])
+        return cls(manifest["id"], manifest["version"], mod.HANDLERS, binding, db)
+
+    def run_once(self, max=8):
+        r = self.b.claim(max, [self.version], str(uuid.uuid4()))
+        for t in r.get("tasks", []):
+            self.run_task(t)
+        return len(r.get("tasks", []))
+
+    def run_task(self, t):
+        ctx = TaskCtx(self.b, t, self.db)
+        try:
+            out = self.handlers[t["handler"].split(".", 1)[1]](ctx, t)
+            if ctx.split_result is None:
+                return self.b.complete(t, out or {}, str(uuid.uuid4()))
+            return ctx.split_result
+        except PluginError as e:
+            return self.b.fail(t, e.code, e.detail, str(uuid.uuid4()))
+        except Exception as e:                                     # crash: retryable core code, no text leak
+            return self.b.fail(t, "core.handler_crashed", {"type": type(e).__name__}, str(uuid.uuid4()))
+
+    def drain(self, max_rounds=100):
+        n = 0
+        for _ in range(max_rounds):
+            k = self.run_once()
+            if not k: break
+            n += k
+        return n

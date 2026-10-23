@@ -59,12 +59,12 @@ BEGIN
     RETURN core.res('REGISTERED');
 END $$;
 
--- Effective policy value: the most specific of (stage, plugin, project, tenant) given, else global. NULL = UNSET.
+-- Effective policy value: stage, then project, tenant, plugin (plugin-wide default), then global. NULL = UNSET.
 CREATE FUNCTION core.policy_value(_key text, _refs text[] DEFAULT '{}') RETURNS jsonb
 LANGUAGE sql STABLE SET search_path = pg_catalog, pg_temp AS $$
     SELECT value FROM core.policies
     WHERE key = _key AND (scope = 'global' OR scope_ref = ANY (_refs))
-    ORDER BY CASE scope WHEN 'stage' THEN 1 WHEN 'plugin' THEN 2 WHEN 'project' THEN 3 WHEN 'tenant' THEN 4 ELSE 5 END
+    ORDER BY CASE scope WHEN 'stage' THEN 1 WHEN 'project' THEN 2 WHEN 'tenant' THEN 3 WHEN 'plugin' THEN 4 ELSE 5 END
     LIMIT 1 $$;
 
 -- §18 relations over the effective values seen from scope_ref; returns the first broken rule or NULL.

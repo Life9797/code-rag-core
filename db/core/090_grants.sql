@@ -25,3 +25,11 @@ TO api;
 
 -- maintenance
 GRANT EXECUTE ON FUNCTION core.signing_key_rotate(uuid, text, jsonb, text) TO maint;
+
+-- runtime: user contracts (api), Worker Protocol (plugin logins via plugin_worker), Core runner and maintenance
+GRANT EXECUTE ON FUNCTION runtime.create_job(uuid, uuid, text, text, uuid, boolean, uuid), runtime.get_job(uuid, uuid),
+    runtime.cancel_job(uuid, uuid, uuid), runtime.retry_job(uuid, uuid, uuid) TO api;
+GRANT EXECUTE ON FUNCTION runtime.claim(int, text[], uuid), runtime.heartbeat(uuid, uuid, bigint, text, boolean),
+    runtime.complete(uuid, uuid, bigint, jsonb, uuid), runtime.fail(uuid, uuid, bigint, text, jsonb, uuid),
+    runtime.split(uuid, uuid, bigint, jsonb, uuid) TO plugin_worker;
+GRANT EXECUTE ON FUNCTION runtime.start_jobs(int), runtime.sweep(int), runtime.finish_stopped_jobs(uuid) TO runtime, maint;
