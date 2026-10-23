@@ -139,6 +139,10 @@ DECLARE a jsonb := jsonb_build_object('tenant', _tenant, 'display', _display, 'r
         r jsonb; pid uuid; cid uuid;
 BEGIN
     IF core.tenant_role(_p, _tenant) < 4 AND NOT core.is_platform_admin(_p) THEN RETURN core.res('FORBIDDEN'); END IF;
+    -- worker scopes act as a plugin login across tenants (§28.1): platform admin only
+    IF EXISTS (SELECT 1 FROM unnest(_scopes) s WHERE s LIKE 'runtime.%') AND NOT core.is_platform_admin(_p) THEN
+        RETURN core.res('FORBIDDEN');
+    END IF;
     IF _secret_hash !~ '^\$argon2id\$' OR _role NOT BETWEEN 1 AND 4 THEN RETURN core.res('INPUT_INVALID'); END IF;
     r := core.req_check(_p, _rid, 'service_client_create', a); IF r IS NOT NULL THEN RETURN r; END IF;
     INSERT INTO core.principals (kind, display_name) VALUES ('service', _display) RETURNING id INTO pid;

@@ -66,3 +66,25 @@ class Worker:
             if not k: break
             n += k
         return n
+
+
+class HttpBinding:
+    """Binding 2: the same messages over HTTP (/runtime/v1/*). post(path, json) -> dict; default uses urllib."""
+    def __init__(self, base_url=None, token=None, post=None):
+        self.post = post or self._urllib(base_url, token)
+    @staticmethod
+    def _urllib(base, token):
+        import urllib.request
+        def post(path, body):
+            rq = urllib.request.Request(base + path, data=json.dumps(body).encode(), method="POST",
+                                        headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"})
+            with urllib.request.urlopen(rq) as resp: return json.loads(resp.read())
+        return post
+    def _t(self, t): return {"task_id": t["task_id"], "lease_token": t["lease_token"], "lease_epoch": t["lease_epoch"]}
+    def claim(self, max, versions, rid): return self.post("/runtime/v1/claim", {"max": max, "versions": versions, "request_id": rid})
+    def heartbeat(self, t, checkpoint=None, extend=False):
+        return self.post("/runtime/v1/heartbeat", {**self._t(t), "checkpoint": checkpoint, "extend": extend})
+    def complete(self, t, result, rid): return self.post("/runtime/v1/complete", {**self._t(t), "result": result, "request_id": rid})
+    def fail(self, t, code, detail, rid):
+        return self.post("/runtime/v1/fail", {**self._t(t), "error_code": code, "detail": detail, "request_id": rid})
+    def split(self, t, children, rid): return self.post("/runtime/v1/split", {**self._t(t), "children": children, "request_id": rid})
