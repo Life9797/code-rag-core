@@ -72,3 +72,12 @@ def test_upload_paste_job_search(base, su, call, world, h):
     assert bad.status_code == 400
     assert c.get("/core/v1/projects").status_code == 401
     stop_project_jobs(su, p)
+
+
+def test_status_and_approve_routes(su, call, world, h):
+    c, A = h["c"], h["admin"]
+    st = c.get("/core/v1/status", headers=A).json()
+    assert st["outcome"] == "OK" and "waiting_approval" in st
+    r = c.post("/core/v1/jobs/00000000-0000-0000-0000-000000000000/approve", json={"stage": "gate"}, headers=A)
+    assert r.status_code == 403
+    assert c.post(f"/core/v1/tenants/{world['A']}/secrets", json={"connector": "tst.api"}, headers=A).status_code == 400

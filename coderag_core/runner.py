@@ -24,6 +24,7 @@ def maint_tick(connect, manifests=None, vol_root=None):
     with connect("maint") as c:
         out["sweep"] = q(c, "SELECT runtime.sweep(500)")
         out["breaker"] = q(c, "SELECT runtime.breaker_eval()")
+        out["approvals"] = q(c, "SELECT runtime.approval_tick()")
         out["indexes"] = q(c, "SELECT knowledge.ensure_indexes()")
         out["gc"] = q(c, "SELECT knowledge.gc_all()")
         out["backup_mode"] = q(c, "SELECT core.backup_mode()")

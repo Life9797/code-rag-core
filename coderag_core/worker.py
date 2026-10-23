@@ -1,6 +1,6 @@
 """Worker Protocol v1 client (§6.2, D-15). Binding 1 = in-process SQL (SqlBinding); binding 2 = HTTP with the
 same messages (coderag_core.http_binding). Handlers get a TaskCtx and never touch runtime tables."""
-import importlib, json, os, threading, uuid
+import base64, importlib, json, os, threading, uuid
 
 
 class PluginError(Exception):
@@ -18,6 +18,7 @@ STAGE_OPS = {
     "get_values": ("knowledge", ("rep_kind", "config_hash", "input_hashes")),
     "task_input": ("runtime", ()),
     "task_search": ("knowledge", ("query", "qvecs", "filters", "k")),
+    "get_connector_secret": ("core", ("connector", "name")),
 }
 JSON_ARGS = {"attrs", "chunks", "detail", "result", "children", "qvecs", "filters"}
 
@@ -70,6 +71,12 @@ class TaskCtx:
     def task_input(self): return self.b.stage("task_input", self.task)
     def search(self, query, qvecs=None, filters=None, k=10):
         return self.b.stage("task_search", self.task, query=query, qvecs=qvecs or {}, filters=filters or {}, k=k)
+    def connector_secret(self, connector, name="default"):
+        """P-P12: own tenant + own plugin's connector only; ciphertext from Core, decrypted here with the host key."""
+        r = self.b.stage("get_connector_secret", self.task, connector=connector, name=name)
+        if r.get("outcome") != "OK": raise PermissionError(r.get("outcome"))
+        from . import secrets
+        return secrets.decrypt(r["key_id"], base64.b64decode(r["ciphertext"]))
     def put_job_item(self, key, status, code=None, detail=None):
         return self.b.stage("put_job_item", self.task, key=key, status=status, code=code, detail=detail or {})
 

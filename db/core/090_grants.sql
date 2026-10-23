@@ -60,3 +60,11 @@ GRANT EXECUTE ON FUNCTION knowledge.gc_all() TO maint;
 GRANT EXECUTE ON FUNCTION core.webhook_subscribe(uuid, uuid, text, text[], text, bytea, uuid), core.webhook_unsubscribe(uuid, uuid, uuid) TO api;
 GRANT EXECUTE ON FUNCTION core.webhook_due(int), core.webhook_mark(bigint, uuid, boolean, int) TO maint;
 GRANT EXECUTE ON FUNCTION core.backup_mode() TO maint;
+
+-- approval gate, connector secrets, observability (087)
+GRANT EXECUTE ON FUNCTION runtime.approve(uuid, uuid, text, text, text, uuid), core.status(uuid),
+    core.connector_secret_set(uuid, uuid, text, text, text, bytea, uuid) TO api;
+GRANT EXECUTE ON FUNCTION runtime.approval_tick() TO maint;
+GRANT EXECUTE ON FUNCTION core.get_connector_secret(uuid, uuid, bigint, text, text) TO plugin_worker;
+GRANT SELECT ON runtime.v_queue, runtime.v_job_durations, runtime.v_breaker_state, knowledge.v_collections,
+    knowledge.v_gc_backlog, core.v_plugins TO maint;

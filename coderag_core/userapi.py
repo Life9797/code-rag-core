@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse
 import secrets as pysecrets
 from . import files, secrets, storage
 
-STATUS = {"DESTINATION_NOT_ALLOWED": 400, "FORBIDDEN": 403, "NOT_FOUND": 404, "INPUT_INVALID": 400, "REQUEST_ID_REUSED": 409, "PROJECT_DELETING": 409}
+STATUS = {"DESTINATION_NOT_ALLOWED": 400, "HASH_MISMATCH": 409, "EXPIRED": 409, "ALREADY_DECIDED": 409, "FORBIDDEN": 403, "NOT_FOUND": 404, "INPUT_INVALID": 400, "REQUEST_ID_REUSED": 409, "PROJECT_DELETING": 409}
 PASTE = re.compile(r"^[A-Za-z0-9_.\-/]{1,200}$")
 
 
@@ -141,6 +141,23 @@ def user_router(settings, claims, manifests) -> APIRouter:
     @r.post("/jobs/{job}/retry")
     async def job_retry(job: str, req: Request, cl=Depends(claims)):
         b = await body(req); return out(call("runtime.retry_job", cl["sub"], job, rid(b)))
+
+    @r.post("/jobs/{job}/approve")
+    async def job_approve(job: str, req: Request, cl=Depends(claims)):
+        """U4 {stage, artifact_sha256?, decision: approve|reject}; approval binds the current artifact hash (R15)."""
+        b = await body(req)
+        return out(call("runtime.approve", cl["sub"], job, b.get("stage"), b.get("artifact_sha256"), b.get("decision", "approve"), rid(b)))
+
+    @r.post("/tenants/{tenant}/secrets")
+    async def secret_set(tenant: str, req: Request, cl=Depends(claims)):
+        """P-P12 {connector: <plugin>.<connector>, name?, value}: stored encrypted with the host key; never returned."""
+        b = await body(req)
+        if not isinstance(b.get("value"), str) or not b["value"]: return out({"outcome": "INPUT_INVALID"})
+        kid, ct = secrets.encrypt(b["value"])
+        return out(call("core.connector_secret_set", cl["sub"], tenant, b.get("connector"), b.get("name") or "default", kid, ct, rid(b)))
+
+    @r.get("/status")
+    def status(cl=Depends(claims)): return out(call("core.status", cl["sub"]))
 
     @r.post("/search")
     async def search(req: Request, cl=Depends(claims)):
