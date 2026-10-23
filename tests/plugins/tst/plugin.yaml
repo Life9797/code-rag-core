@@ -7,6 +7,7 @@ entry: tests.plugins.tst
 schema: plugin_tst
 migrations: migrations/
 handlers: [{name: h, kind: item}]
+resources: [{key: emb, kind: http, breaker: true}]
 collections: [{key: c}]
 pipelines:
-  - {key: p, version: 1, collection: c, publish_mode: full, stages: [{key: s, kind: item, handler: h}, {key: publish, kind: publish, depends_on: [s]}]}
+  - {key: p, version: 1, collection: c, publish_mode: full, stages: [{key: s, kind: item, handler: h, resource: tst.emb}, {key: publish, kind: publish, depends_on: [s]}]}

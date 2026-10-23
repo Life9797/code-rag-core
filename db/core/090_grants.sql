@@ -33,3 +33,4 @@ GRANT EXECUTE ON FUNCTION runtime.claim(int, text[], uuid), runtime.heartbeat(uu
     runtime.complete(uuid, uuid, bigint, jsonb, uuid), runtime.fail(uuid, uuid, bigint, text, jsonb, uuid),
     runtime.split(uuid, uuid, bigint, jsonb, uuid) TO plugin_worker;
 GRANT EXECUTE ON FUNCTION runtime.start_jobs(int), runtime.sweep(int), runtime.finish_stopped_jobs(uuid) TO runtime, maint;
+GRANT EXECUTE ON FUNCTION runtime.breaker_eval() TO runtime, maint;

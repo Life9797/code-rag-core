@@ -222,3 +222,32 @@ def test_tp19_siblings_complete_together(su, base, call, world, proj):
         assert g["stages"] == {"fan": "succeeded", "publish": "ready"}
         assert su.execute("SELECT count(*) FROM runtime.lifecycle_events WHERE job_id = %s AND stage_key = 'fan'", (j,)).fetchone()[0] == 1
         stop_project_jobs(su, proj)
+
+
+def test_rt01_breaker_open_does_not_burn_attempts(su, base, call, world, proj):
+    """Embedder down: health-sample fails open the breaker; fails while open are not charged; claims pause."""
+    su.execute("UPDATE core.policies SET value = '2' WHERE scope = 'global' AND key = 'runtime.breaker.min_sample'"); su.commit()
+    js = [job(call, world, proj, "tst", "p")]
+    start(call)
+    with connect(base, "plugin_tst") as c:
+        b = SqlBinding(c)
+        for i in range(6):
+            su.execute("UPDATE runtime.tasks SET ready_at = now() WHERE job_id = %s AND status = 'retry_wait'", (js[0],)); su.commit()
+            r = b.claim(1, ["0.1.0"], str(uuid.uuid4()))
+            if r["outcome"] == "EMPTY":
+                break
+            assert b.fail(r["tasks"][0], "core.resource_unavailable", {}, str(uuid.uuid4()))["outcome"] == "RETRY_SCHEDULED"
+            call("maint", "runtime.breaker_eval")
+        assert su.execute("SELECT state FROM runtime.resource_state WHERE resource_key = 'tst.emb'").fetchone()[0] == "open"
+        assert b.claim(1, ["0.1.0"], str(uuid.uuid4()))["outcome"] == "EMPTY"            # paused while open
+    assert su.execute("SELECT status FROM runtime.tasks WHERE job_id = %s", (js[0],)).fetchone()[0] == "retry_wait"
+    assert get(call, world, js[0])["status"] == "running"                              # no job failed
+    su.execute("UPDATE runtime.resource_state SET opened_at = now() - interval '1 hour' WHERE resource_key = 'tst.emb'")
+    su.execute("UPDATE runtime.tasks SET ready_at = now() WHERE job_id = %s", (js[0],)); su.commit()
+    assert call("maint", "runtime.breaker_eval")["tst.emb"] == "half_open"
+    with connect(base, "plugin_tst") as c:
+        b = SqlBinding(c)
+        t = b.claim(1, ["0.1.0"], str(uuid.uuid4()))["tasks"][0]
+        assert b.complete(t, {}, str(uuid.uuid4()))["outcome"] == "OK"
+    assert call("maint", "runtime.breaker_eval")["tst.emb"] == "closed"
+    su.execute("UPDATE core.policies SET value = '10' WHERE scope = 'global' AND key = 'runtime.breaker.min_sample'"); su.commit()
