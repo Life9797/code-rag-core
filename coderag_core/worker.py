@@ -17,8 +17,9 @@ STAGE_OPS = {
     "put_job_item": ("runtime", ("key", "status", "code", "detail")),
     "get_values": ("knowledge", ("rep_kind", "config_hash", "input_hashes")),
     "task_input": ("runtime", ()),
+    "task_search": ("knowledge", ("query", "qvecs", "filters", "k")),
 }
-JSON_ARGS = {"attrs", "chunks", "detail", "result", "children"}
+JSON_ARGS = {"attrs", "chunks", "detail", "result", "children", "qvecs", "filters"}
 
 
 def sql_args(names, values):
@@ -39,6 +40,10 @@ class SqlBinding:
         schema, names = STAGE_OPS[op]
         args = [t["task_id"], t["lease_token"], t["lease_epoch"]] + sql_args(names, [kw.get(n) for n in names])
         ph = ", ".join(["%s"] * len(args))
+        if op == "task_search":                                    # search reads one REPEATABLE READ snapshot (TP-20)
+            with self.conn.transaction():
+                self.conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+                return self.conn.execute(f"SELECT {schema}.{op}({ph})", args).fetchone()[0]
         return self.conn.execute(f"SELECT {schema}.{op}({ph})", args).fetchone()[0]
 
 
@@ -63,6 +68,8 @@ class TaskCtx:
     def get_values(self, rep_kind, config_hash, input_hashes):
         return self.b.stage("get_values", self.task, rep_kind=rep_kind, config_hash=config_hash, input_hashes=list(input_hashes))["values"]
     def task_input(self): return self.b.stage("task_input", self.task)
+    def search(self, query, qvecs=None, filters=None, k=10):
+        return self.b.stage("task_search", self.task, query=query, qvecs=qvecs or {}, filters=filters or {}, k=k)
     def put_job_item(self, key, status, code=None, detail=None):
         return self.b.stage("put_job_item", self.task, key=key, status=status, code=code, detail=detail or {})
 

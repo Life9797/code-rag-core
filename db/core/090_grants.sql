@@ -40,7 +40,8 @@ GRANT EXECUTE ON FUNCTION knowledge.put_unit(uuid, uuid, bigint, text, text, tex
     knowledge.put_representation(uuid, uuid, bigint, text, text, text, uuid, uuid, text, text),
     knowledge.mark_units(uuid, uuid, bigint, text, text, text[], text),
     runtime.put_job_item(uuid, uuid, bigint, text, text, text, jsonb),
-    knowledge.get_values(uuid, uuid, bigint, text, text, text[]), runtime.task_input(uuid, uuid, bigint) TO plugin_worker;
+    knowledge.get_values(uuid, uuid, bigint, text, text, text[]), runtime.task_input(uuid, uuid, bigint),
+    knowledge.task_search(uuid, uuid, bigint, text, jsonb, jsonb, int) TO plugin_worker;
 GRANT EXECUTE ON FUNCTION knowledge.publish(uuid), knowledge.publish_ready(int) TO runtime;
 GRANT EXECUTE ON FUNCTION knowledge.delete_units(uuid, uuid, uuid, text, text[], uuid),
     knowledge.pin(uuid, uuid, interval), knowledge.unpin(uuid, uuid),

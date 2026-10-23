@@ -22,3 +22,13 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
                    'pipeline', j.plugin_id || '.' || j.pipeline_key, 'created_at', j.created_at, 'finished_at', j.finished_at) x
             FROM runtime.jobs j WHERE j.project_id = _project AND (_source IS NULL OR j.source_id = _source)
             ORDER BY j.created_at DESC LIMIT least(coalesce(_limit, 20), 100)) y), '[]'))) END $$;
+
+-- Worker search (eval, §35): the job's project with the job creator's rights; caller must hold the task lease.
+CREATE FUNCTION knowledge.task_search(_task uuid, _token uuid, _epoch bigint, _query text, _qvecs jsonb, _filters jsonb, _k int)
+RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+DECLARE e jsonb; j runtime.jobs;
+BEGIN
+    e := knowledge.lease_err(_task, _token, _epoch); IF e IS NOT NULL THEN RETURN e; END IF;
+    SELECT jb.* INTO j FROM runtime.jobs jb JOIN runtime.tasks t ON t.job_id = jb.id WHERE t.id = _task;
+    RETURN knowledge.search(j.created_by, ARRAY[j.project_id], NULL, _query, _qvecs, _filters, _k);
+END $$;

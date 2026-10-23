@@ -15,7 +15,7 @@ def runtime_tick(connect):
     with connect("runtime") as c:
         started = q(c, "SELECT runtime.start_jobs(50)")
         published = {str(j): q(c, "SELECT knowledge.publish(%s)", j) for j in q(c, "SELECT knowledge.publish_ready(20)")}
-        done = q(c, "SELECT runtime.finish_done_jobs()")
+        done = q(c, "SELECT runtime.finish_done_jobs()") + q(c, "SELECT runtime.finish_stopped_jobs()")
     return {"started": started, "published": published, "done": done}
 
 

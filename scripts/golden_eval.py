@@ -7,7 +7,7 @@ import psycopg
 from coderag_core import coreadm, files, initdb, runner, storage
 from coderag_core.worker import Worker, SqlBinding
 from plugins.code import main as code
-from scripts.evalkit import golden, metrics
+from plugins.eval import golden, metrics, main as evalmain
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -58,13 +58,7 @@ def main():
                     r = c.execute("SELECT knowledge.search(%s, %s, NULL, %s, %s, NULL, %s)",
                                   (admin, [p], text, json.dumps(code.query_vectors(text)), o.k)).fetchone()[0]
                 ms = (time.perf_counter() - t1) * 1000
-                hits = []
-                for x in r.get("hits", []):
-                    at, sp = x["attrs"], (x.get("chunk") or {}).get("span") or {}
-                    mod = code.py.module_name(at.get("path", ""))
-                    sym = at.get("symbol", "")
-                    sym = sym[len(mod) + 1:] if sym.startswith(mod + ".") else ("" if sym == mod else sym)
-                    hits.append(metrics.Hit(at.get("path", ""), sp.get("start_line", 0), sp.get("end_line", 0), sym))
+                hits = evalmain.hits_from(r)
                 rows.setdefault(lang, []).append({**metrics.score_query(hits, q.expected, o.k), "latency_ms": ms})
         out = {lang: metrics.summarize(v) for lang, v in rows.items()}
         out["all"] = metrics.summarize([r for v in rows.values() for r in v])

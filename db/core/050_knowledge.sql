@@ -345,7 +345,7 @@ LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
 CREATE FUNCTION knowledge.search(_p uuid, _projects uuid[], _collections uuid[], _query text, _qvecs jsonb,
                                  _filters jsonb, _k int, _pins jsonb DEFAULT NULL, _include_content boolean DEFAULT false)
 RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER
-SET search_path = pg_catalog, ext, pg_temp SET hnsw.iterative_scan = relaxed_order AS $$
+SET search_path = pg_catalog, ext, pg_temp SET hnsw.iterative_scan = relaxed_order SET max_parallel_workers_per_gather = 0 AS $$
 DECLARE pr uuid; colls uuid[]; gens jsonb := '{}'; snap jsonb; cand int; rrfk numeric; maxk int; rk text; ch text; dims int;
         sqlv text; hits jsonb := '[]'; part jsonb; out jsonb; vis uuid[]; cc record; f jsonb := coalesce(_filters, '{}'); tenants uuid[];
 BEGIN
@@ -414,13 +414,13 @@ BEGIN
                 LEFT JOIN knowledge.chunks c ON c.id = l.chunk_id
                 WHERE v.tenant_id = ANY ($2) AND v.rep_kind = %L AND v.config_hash = %L
                   AND coalesce(l.unit_version_id, c.unit_version_id) = ANY ($3)
-                ORDER BY v.vec::ext.vector(%s) OPERATOR(ext.<=>) $1::ext.vector(%s) LIMIT %s) x) y$q$,
-            rk, dims, dims, rk, ch, dims, dims, cand);
+                ORDER BY v.vec::ext.vector(%s) OPERATOR(ext.<=>) $1::ext.vector(%s) FETCH FIRST %s ROWS WITH TIES) x) y WHERE n <= %s$q$,
+            rk, dims, dims, rk, ch, dims, dims, cand, cand);   -- WITH TIES + (d, vid, cid): equal distances give the same hits
         EXECUTE sqlv INTO part USING (_qvecs->rk->>'vec'), tenants, vis;
         hits := hits || part;
     END LOOP;
     -- RRF per unit version (weights knowledge.search.weight.<kind>, default 1); best chunk kept
-    SELECT coalesce(jsonb_agg(h ORDER BY (h->>'score')::numeric DESC), '[]') INTO out FROM (
+    SELECT coalesce(jsonb_agg(h ORDER BY (h->>'score')::numeric DESC, h->>'unit_version_id'), '[]') INTO out FROM (
         SELECT jsonb_build_object('unit_id', u.id, 'unit_version_id', uv.id, 'collection_id', u.collection_id, 'kind', u.kind,
                    'key', u.key, 'source_id', u.source_id, 'attrs', uv.attrs, 'score', round(r.score, 6), 'matched', r.matched,
                    'gen', (gens->>u.collection_id::text)::bigint,
@@ -429,7 +429,7 @@ BEGIN
         FROM (SELECT x.v AS unit_version_id, sum(coalesce(runtime.nval(snap, 'knowledge.search.weight.' || x.r, 1), 1) / (rrfk + x.n)) AS score,
                      jsonb_agg(DISTINCT x.r) AS matched,
                      (array_agg(x.c ORDER BY x.n) FILTER (WHERE x.c IS NOT NULL))[1] AS best_chunk
-              FROM jsonb_to_recordset(hits) AS x(r text, n int, v uuid, c uuid) GROUP BY x.v ORDER BY score DESC LIMIT _k) r
+              FROM jsonb_to_recordset(hits) AS x(r text, n int, v uuid, c uuid) GROUP BY x.v ORDER BY score DESC, x.v LIMIT _k) r
         JOIN knowledge.unit_versions uv ON uv.id = r.unit_version_id JOIN knowledge.units u ON u.id = uv.unit_id
         LEFT JOIN knowledge.chunks bc ON bc.id = coalesce(r.best_chunk,
             (SELECT id FROM knowledge.chunks WHERE unit_version_id = uv.id ORDER BY ordinal LIMIT 1))) z;

@@ -96,8 +96,8 @@ def check(m: dict) -> dict:
             for d in stages[k].get("depends_on", []): visit(d)
             done.add(k)
         for k in stages: visit(k)
-        if sum(s["kind"] == "publish" for s in p["stages"]) != 1:
-            raise ManifestError(f"pipeline {p['key']}: exactly one publish stage")
+        if sum(s["kind"] == "publish" for s in p["stages"]) > 1:      # none = job ends DONE (no knowledge output)
+            raise ManifestError(f"pipeline {p['key']}: at most one publish stage")
     return m
 
 
