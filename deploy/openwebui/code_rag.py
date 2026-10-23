@@ -24,6 +24,7 @@ ASK = "이 코드는 어떤 언어인가요?"
 KO = {"FORBIDDEN": "이 프로젝트에 접근 권한이 없습니다", "INPUT_INVALID": "입력 형식이 올바르지 않습니다",
       "PROJECT_DELETING": "삭제 중인 프로젝트입니다", "TOO_LARGE": "첨부 파일이 너무 큽니다", "NO_PROJECT": "사용할 프로젝트가 없습니다",
       "UNSUPPORTED": "지금은 python 코드만 분석합니다", "ERROR": "code-rag 요청이 실패했습니다"}
+NONE = "code-rag는 연결되어 있지만 찾은 코드가 없습니다 (아직 분석된 코드가 없거나 검색어와 맞지 않음)"
 UPLOADS = "/app/backend/data/uploads"
 
 
@@ -272,13 +273,21 @@ class Tools:
     def __init__(self, transport=None):
         self.valves, self.transport = Valves(), transport
 
-    async def code_rag(self, request: str, __user__: dict = None, __metadata__: dict = None, __event_emitter__=None) -> str:
+    async def code_rag(self, request: str, __user__: dict = None, __metadata__: dict = None, __event_emitter__=None,
+                       __messages__: list = None) -> str:
         """
-        code-rag follow-ups in plain language: job status ("끝났어?"), search again, or list projects.
+        code-rag: analyze code the user pasted, check job status ("끝났어?"), search analyzed code, or list projects.
         :param request: what the user asked, in their words.
         """
         meta, uv = __metadata__ or {}, (__user__ or {}).get("valves")
         chat = meta.get("chat_id") or "local"
+        msgs = [dict(m) for m in __messages__ or []]
+        if msgs and (pasted_files(last_user(msgs)) or held(msgs)):        # pasted code also works when the Filter is off
+            f = Filter(self.transport); f.valves = self.valves
+            body = await f.inlet({"messages": msgs}, __user__=__user__, __metadata__=__metadata__,
+                                 __event_emitter__=__event_emitter__)
+            sys_msg = body["messages"][0]["content"] if body["messages"][0].get("role") == "system" else ""
+            return sys_msg.split("[code-rag]\n", 1)[-1] if "[code-rag]" in sys_msg else KO["ERROR"]
         c = Client(self.valves, self.transport)
         try:
             if LIST.search(request):
@@ -298,7 +307,7 @@ class Tools:
             for pid, src in targets:
                 if pid == self.valves.SCRATCH_PROJECT:                    # ST-25: scratch data only of this chat
                     out += (await c.search([pid], request, source=src, k=self.valves.SEARCH_K)).get("hits") or []
-            return render(out, self.valves.CONTEXT_MAX_CHARS) or "결과가 없습니다"
+            return render(out, self.valves.CONTEXT_MAX_CHARS) or NONE
         except (httpx.HTTPError, KeyError, ValueError):
             return KO["ERROR"]
         finally:

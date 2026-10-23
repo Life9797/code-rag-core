@@ -66,7 +66,7 @@ def test_ch01_ch06_ch09_paste_status_replay(base, env):
     assert "succeeded" in st and n1.split("job ")[1].split(")")[0] in st  # CH-06
     hits = tool(env["t"], "refund paid order")
     assert "pasted/1.py" in hits and "refund" in hits
-    assert tool(env["t"], "refund paid order", chat="other") == "결과가 없습니다"   # ST-25: other chat sees nothing
+    assert tool(env["t"], "refund paid order", chat="other") == owui.NONE   # ST-25: other chat sees nothing
 
 
 def test_ch07_language_question_then_answer(base, env):
@@ -98,3 +98,11 @@ def test_ch11_attachment_too_large(env, tmp_path):
     finally:
         env["f"].valves.MAX_ATTACH_MB = 50
     assert owui.KO["TOO_LARGE"] in n
+
+
+def test_tool_uploads_paste_when_filter_off(base, env):
+    msgs = [{"role": "user", "content": PASTE.replace("refund", "rebate")}]
+    out = asyncio.run(env["t"].code_rag("분석해줘", __metadata__={"chat_id": "c13", "message_id": "m1"}, __messages__=msgs))
+    assert "job " in out
+    drive(base)
+    assert "rebate" in tool(env["t"], "rebate paid order", chat="c13")
