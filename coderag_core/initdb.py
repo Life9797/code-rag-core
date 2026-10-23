@@ -53,10 +53,19 @@ def _requires_ok(rng, version):
     return True
 
 
-def init(dsn, plugin_root=None, log=print):
+def init(dsn, plugin_root=None, log=print, roles_only=False):
+    """roles_only: restore drill step 1 (§38) - logins and owner roles only, then pg_restore brings the objects."""
     conn = psycopg.connect(dsn, autocommit=True)
     cur = conn.cursor()
     dbname = conn.info.dbname
+    if roles_only:
+        for r, login in (("core_owner", False), ("plugin_worker", False)) + tuple((x, True) for x in LOGINS): _role(cur, r, login)
+        for d in sorted(glob.glob(os.path.join(plugin_root or os.path.join(ROOT, "plugins"), "*", "plugin.yaml"))):
+            pid = mf.load(os.path.dirname(d))["id"]
+            _role(cur, f"plugin_{pid}", True); _role(cur, f"plugin_{pid}_owner", False)
+            cur.execute(sql.SQL("GRANT plugin_worker TO {}").format(sql.Identifier(f"plugin_{pid}")))
+        cur.execute(sql.SQL("GRANT CREATE ON DATABASE {} TO core_owner").format(sql.Identifier(dbname)))
+        conn.close(); return
     cur.execute("CREATE SCHEMA IF NOT EXISTS ext")
     cur.execute("CREATE EXTENSION IF NOT EXISTS vector SCHEMA ext")
     cur.execute("SELECT to_regproc('pg_catalog.uuidv7') IS NULL")

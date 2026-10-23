@@ -14,12 +14,13 @@ log = logging.getLogger("coderag")
 def main():
     a = argparse.ArgumentParser()
     a.add_argument("role", choices=["init", "api", "worker"]); a.add_argument("--port", type=int, default=8080)
+    a.add_argument("--roles-only", action="store_true", help="restore drill: roles before pg_restore (§38)")
     o = a.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     plugins = os.environ.get("CODERAG_PLUGINS") or None
     if o.role == "init":
         dsn = os.environ["CODERAG_ADMIN_DSN"]
-        initdb.init(dsn, plugins, log=log.info)
+        initdb.init(dsn, plugins, log=log.info, roles_only=o.roles_only)
         with psycopg.connect(dsn, autocommit=True) as c:
             pw = os.environ.get("CODERAG_DB_PASSWORD")
             if pw:
@@ -27,6 +28,7 @@ def main():
                 for (r,) in c.execute("SELECT rolname FROM pg_roles WHERE rolcanlogin AND rolname IN ('api', 'runtime', 'purge', 'maint') "
                                       "OR rolname LIKE 'plugin\\_%' AND rolcanlogin"):
                     c.execute(sql.SQL("ALTER ROLE {} PASSWORD {}").format(sql.Identifier(r), sql.Literal(pw)))
+        if o.roles_only: return
         log.info("secrets key: %s", secrets.ensure_key())
         with api.Settings().connect("maint") as c:                 # MG-07: first key by the maint login
             if not c.execute("SELECT core.signing_key_active()").fetchone()[0]:

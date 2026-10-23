@@ -6,7 +6,7 @@ name: coderag04
 
 x-env: &env
   CODERAG_DSN_BASE: host=postgres port=5432 dbname=coderag password=${DB_PASSWORD}
-  CODERAG_EMBED_URL: ${EMBED_URL:-http://embed:80}
+  CODERAG_EMBED_URL: ${EMBED_URL-http://embed:80}       # EMBED_URL= (empty) -> stub embedder (tests only)
   CODERAG_EMBED_API: ${EMBED_API:-tei}
   CODERAG_EMBED_MODEL: bge-m3
   CODERAG_EMBED_MODEL_ID: ${EMBED_MODEL_ID:-bge-m3@main}
@@ -56,7 +56,8 @@ services:
     environment: *env
     depends_on: { init: { condition: service_completed_successfully } }
 
-  embed:
+  embed:                       # profile embed (COMPOSE_PROFILES=embed in .env); leave it out when EMBED_URL points elsewhere
+    profiles: [embed]
     image: ${EMBED_IMAGE:-ghcr.io/huggingface/text-embeddings-inference:cpu-1.8}
     command: --model-id /models/bge-m3 --max-client-batch-size 64
     volumes: ["${MODELS_DIR:-../models}:/models:ro"]

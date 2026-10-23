@@ -26,7 +26,8 @@ def maint_tick(connect, manifests=None, vol_root=None):
         out["breaker"] = q(c, "SELECT runtime.breaker_eval()")
         out["indexes"] = q(c, "SELECT knowledge.ensure_indexes()")
         out["gc"] = q(c, "SELECT knowledge.gc_all()")
-        pruned = q(c, "SELECT core.snapshot_retention(1000)")["pruned"]
+        out["backup_mode"] = q(c, "SELECT core.backup_mode()")
+        pruned = [] if out["backup_mode"] else q(c, "SELECT core.snapshot_retention(1000)")["pruned"]   # §38: no file deletes
     for ref in pruned:
         if ref.startswith("vol://"): storage.remove(ref, vol_root)
     out["purge"] = purge(connect, manifests or {})

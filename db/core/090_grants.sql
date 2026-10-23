@@ -58,3 +58,4 @@ GRANT EXECUTE ON FUNCTION knowledge.gc_all() TO maint;
 -- webhooks (G1)
 GRANT EXECUTE ON FUNCTION core.webhook_subscribe(uuid, uuid, text, text[], text, bytea, uuid), core.webhook_unsubscribe(uuid, uuid, uuid) TO api;
 GRANT EXECUTE ON FUNCTION core.webhook_due(int), core.webhook_mark(bigint, uuid, boolean, int) TO maint;
+GRANT EXECUTE ON FUNCTION core.backup_mode() TO maint;

@@ -1,6 +1,8 @@
 """coreadm (§28.2 bootstrap): runs as the DB superuser on the host.
   bootstrap NAME                 first platform admin principal (prints its id)
   init-tenant NAME               tenant created by the first platform admin (prints its id)
+  backup-mode on|off              §38: pause/resume volume file deletes around a backup
+  verify                         §38 restore check (files, plugin folders, secrets); exit 1 when not ok
   rotate-key KEYS_DIR            new JWT signing key (MG-07)
   issue-client ADMIN TENANT NAME ROLE   service client via MG-05 (prints client_id and the secret once)
 """
@@ -36,6 +38,12 @@ if __name__ == "__main__":
     elif cmd == "init-tenant":
         admin = conn.execute("SELECT principal_id FROM core.platform_admins ORDER BY 1 LIMIT 1").fetchone()[0]
         print(json.dumps(conn.execute("SELECT core.tenant_create(%s, %s, %s)", (admin, args[0], uuid.uuid4())).fetchone()[0])); conn.commit()
+    elif cmd == "backup-mode":
+        conn.execute("SELECT core.backup_mode_set(%s)", (args[0] == "on",)); conn.commit(); print(args[0])
+    elif cmd == "verify":
+        from .backup import verify
+        r = verify(conn, os.environ.get("CODERAG_PLUGINS", "plugins"))
+        print(json.dumps(r, indent=1)); sys.exit(0 if r["ok"] else 1)
     elif cmd == "rotate-key": print(auth.rotate_key(conn, args[0])); conn.commit()
     elif cmd == "issue-client":
         r, s = issue_client(conn, args[0], args[1], args[2], int(args[3]))
