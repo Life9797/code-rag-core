@@ -18,7 +18,7 @@ def user_router(settings, claims, manifests) -> APIRouter:
 
     def call(fn, *args):
         try:
-            with settings.connect("api") as c:
+            with settings.conn("api") as c:
                 return c.execute(f"SELECT {fn}({', '.join(['%s'] * len(args))})",
                                  [json.dumps(a) if isinstance(a, dict) else a for a in args]).fetchone()[0]
         except psycopg.errors.DataError:                          # malformed id or value -> 400, not 500
@@ -208,7 +208,7 @@ def user_router(settings, claims, manifests) -> APIRouter:
         for m in manifests.values():
             fn = getattr(importlib.import_module(m["entry"]), "query_vectors", None)
             if fn and q: qv.update(fn(q))
-        with settings.connect("api") as c:
+        with settings.conn("api") as c:
             c.autocommit = False
             c.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
             res = c.execute("SELECT knowledge.search(%s, %s, %s, %s, %s, %s, %s, %s, %s)",

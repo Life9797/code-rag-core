@@ -45,13 +45,24 @@ def issue_token(conn, client_id, secret, ttl=3600):
     return jwt.encode(claims, pk, algorithm="ES256", headers={"kid": key["kid"]})
 
 
+_JWKS = {"at": 0.0, "keys": {}}
+
+
+def _jwks(cur, kid, ttl=30):
+    """Core JWKS cached for ttl s (review 7); an unknown kid (rotation) refetches. Revocation stays per request."""
+    age = time.time() - _JWKS["at"]
+    if age > ttl or kid not in _JWKS["keys"]:
+        cur.execute("SELECT core.jwks()")
+        _JWKS.update(at=time.time(), keys={k["kid"]: k for k in cur.fetchone()[0]})
+    return _JWKS["keys"].get(kid)
+
+
 def verify_token(conn, token):
     """Returns claims or None (-> 401): bad signature, unknown kid, wrong aud, expired, revoked client."""
     try:
         kid = jwt.get_unverified_header(token).get("kid")
         with conn.cursor() as cur:
-            cur.execute("SELECT core.jwks()")
-            jwk = next((k for k in cur.fetchone()[0] if k["kid"] == kid), None)
+            jwk = _jwks(cur, kid)
             if jwk is None: return None
             claims = jwt.decode(token, jwt.PyJWK(jwk).key, algorithms=["ES256"], audience=AUD)
             cur.execute("SELECT core.client_active(%s)", (claims["client"],))

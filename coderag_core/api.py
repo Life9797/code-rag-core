@@ -1,6 +1,6 @@
 """Core API (thin): token + JWKS (P-P4), health, and the Worker Protocol HTTP binding (§28.1, D-15).
 Each request opens its own connection as the right login: `api` for user contracts, `plugin_<id>` for worker calls."""
-import json, os
+import json, os, threading
 import psycopg
 from fastapi import FastAPI, APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse
@@ -13,7 +13,18 @@ class Settings:
     def __init__(self, dsn_base=None, dsn_for=None):
         # dsn_for(login) -> DSN string; default: CODERAG_DSN_BASE + " user=<login>" (password via PGPASSFILE / env)
         self.dsn_for = dsn_for or (lambda login: f"{dsn_base or os.environ['CODERAG_DSN_BASE']} user={login}")
+        self.pools, self.lock = {}, threading.Lock()
     def connect(self, login): return psycopg.connect(self.dsn_for(login), autocommit=True)
+    def conn(self, login):
+        """Pooled connection per login for API requests (review 7): `with settings.conn(login) as c`."""
+        with self.lock:
+            p = self.pools.get(login)
+            if p is None:
+                from psycopg_pool import ConnectionPool
+                p = self.pools[login] = ConnectionPool(self.dsn_for(login), min_size=1, max_size=int(os.environ.get("CODERAG_DB_POOL", "10")),
+                                                       kwargs={"autocommit": True}, reset=lambda c: setattr(c, "autocommit", True),
+                                                       check=ConnectionPool.check_connection, open=True)
+        return p.connection()
 
 
 def create_app(settings: Settings, manifests=None, oidc=None) -> FastAPI:
@@ -23,7 +34,7 @@ def create_app(settings: Settings, manifests=None, oidc=None) -> FastAPI:
     def identify(tok):
         """(claims, unlinked identity): a Core token, or a linked Keycloak token mapped to its principal."""
         if not tok: return None, None
-        with settings.connect("api") as c:
+        with settings.conn("api") as c:
             cl = auth.verify_token(c, tok)
             if cl or not oidc: return cl, None
             ident = oidc.verify(tok)
@@ -46,7 +57,7 @@ def create_app(settings: Settings, manifests=None, oidc=None) -> FastAPI:
         cl, ident = identify(authorization.removeprefix("Bearer ").strip())
         if ident: return {"outcome": "NOT_LINKED", **ident}
         if not cl: raise HTTPException(401, "invalid token")
-        with settings.connect("api") as c:
+        with settings.conn("api") as c:
             return c.execute("SELECT core.admin_overview(%s)", (cl["sub"],)).fetchone()[0]
 
     @app.get("/admin", response_class=HTMLResponse)
@@ -61,19 +72,19 @@ def create_app(settings: Settings, manifests=None, oidc=None) -> FastAPI:
         """Threadpool route: argon2 (64 MB, t=3) never runs on the event loop; failures are rate limited (review 1)."""
         cid, who = str(form.get("client_id", "")), req.client.host if req.client else ""
         if not limiter.allow(cid, who): raise HTTPException(429, "too_many_attempts")
-        with limiter.slot(), settings.connect("api") as c:
+        with limiter.slot(), settings.conn("api") as c:
             t = auth.issue_token(c, cid, form.get("client_secret", ""))
         if not t: limiter.fail(cid, who); raise HTTPException(401, "invalid_client")
         return {"access_token": t, "token_type": "Bearer"}
 
     @app.get("/core/v1/jwks")
     def jwks():
-        with settings.connect("api") as c:
+        with settings.conn("api") as c:
             return {"keys": c.execute("SELECT core.jwks()").fetchone()[0]}
 
     @app.get("/core/v1/health")
     def health():
-        with settings.connect("api") as c:
+        with settings.conn("api") as c:
             c.execute("SELECT 1")
         return {"db": "ok"}
 
@@ -103,7 +114,7 @@ def worker_router(settings, claims) -> APIRouter:
             args = [body.get(k) for k in ARGS[op]]
             args = [json.dumps(a) if isinstance(a, (dict, list)) and k in ("result", "detail", "children") else a
                     for k, a in zip(ARGS[op], args)]
-            with settings.connect(f"plugin_{plugin_of(cl)}") as c:
+            with settings.conn(f"plugin_{plugin_of(cl)}") as c:
                 ph = ", ".join(["%s"] * len(args))
                 return c.execute(f"SELECT runtime.{op}({ph})", args).fetchone()[0]
         return handler
@@ -113,7 +124,7 @@ def worker_router(settings, claims) -> APIRouter:
     @r.post("/stage/{op}")
     def stage(op: str, body=Depends(jbody), cl=Depends(claims)):
         if op not in STAGE_OPS: raise HTTPException(404)
-        with settings.connect(f"plugin_{plugin_of(cl)}") as c:
+        with settings.conn(f"plugin_{plugin_of(cl)}") as c:
             return SqlBinding(c).stage(op, body, **{k: body.get(k) for k in STAGE_OPS[op][1]})
     return r
 
