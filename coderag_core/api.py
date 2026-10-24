@@ -53,12 +53,17 @@ def create_app(settings: Settings, manifests=None, oidc=None) -> FastAPI:
     def admin_page():
         with open(os.path.join(os.path.dirname(__file__), "admin.html"), encoding="utf-8") as f: return f.read()
 
+    async def form_of(req: Request): return await req.form()
+    limiter = auth.Limiter()
+
     @app.post("/core/v1/token")
-    async def token(req: Request):
-        form = await req.form()
-        with settings.connect("api") as c:
-            t = auth.issue_token(c, form.get("client_id", ""), form.get("client_secret", ""))
-        if not t: raise HTTPException(401, "invalid_client")
+    def token(req: Request, form=Depends(form_of)):
+        """Threadpool route: argon2 (64 MB, t=3) never runs on the event loop; failures are rate limited (review 1)."""
+        cid, who = str(form.get("client_id", "")), req.client.host if req.client else ""
+        if not limiter.allow(cid, who): raise HTTPException(429, "too_many_attempts")
+        with limiter.slot(), settings.connect("api") as c:
+            t = auth.issue_token(c, cid, form.get("client_secret", ""))
+        if not t: limiter.fail(cid, who); raise HTTPException(401, "invalid_client")
         return {"access_token": t, "token_type": "Bearer"}
 
     @app.get("/core/v1/jwks")
@@ -91,9 +96,10 @@ def worker_router(settings, claims) -> APIRouter:
         if len(ps) != 1: raise HTTPException(403, "scope runtime.worker:<plugin> required")
         return ps[0]
 
+    async def jbody(req: Request): return await req.json()
+
     def make(op):
-        async def handler(req: Request, cl=Depends(claims)):
-            body = await req.json()
+        def handler(body=Depends(jbody), cl=Depends(claims)):
             args = [body.get(k) for k in ARGS[op]]
             args = [json.dumps(a) if isinstance(a, (dict, list)) and k in ("result", "detail", "children") else a
                     for k, a in zip(ARGS[op], args)]
@@ -105,9 +111,8 @@ def worker_router(settings, claims) -> APIRouter:
     for op in ARGS: r.add_api_route(f"/{op}", make(op), methods=["POST"])
 
     @r.post("/stage/{op}")
-    async def stage(op: str, req: Request, cl=Depends(claims)):
+    def stage(op: str, body=Depends(jbody), cl=Depends(claims)):
         if op not in STAGE_OPS: raise HTTPException(404)
-        body = await req.json()
         with settings.connect(f"plugin_{plugin_of(cl)}") as c:
             return SqlBinding(c).stage(op, body, **{k: body.get(k) for k in STAGE_OPS[op][1]})
     return r

@@ -1,6 +1,6 @@
 """Service tokens (P-P4, MG-05..07): argon2id secrets, ES256 JWT with kid, JWKS, per-request client check.
 The DB never sees a secret; the api never reads secret_hash (two definer calls, MG-06)."""
-import base64, json, os, secrets, time, uuid
+import base64, contextlib, json, os, secrets, threading, time, uuid
 import jwt
 from argon2 import PasswordHasher, low_level
 from cryptography.hazmat.primitives import serialization
@@ -72,6 +72,28 @@ def rotate_key(conn, keys_dir, principal_id=None):
     with conn.cursor() as cur:
         cur.execute("SELECT core.signing_key_rotate(%s, %s, %s::jsonb, %s)", (principal_id, kid, json.dumps(pub), path))
         return cur.fetchone()[0]
+
+
+class Limiter:
+    """Token endpoint guard: at most `fails` failures per client id and per source address in `window` s (then 429),
+    and at most `slots` argon2 checks at once (64 MB each). In-process; one api process per host (§28.2)."""
+    def __init__(self, fails=10, window=60, slots=4):
+        self.fails, self.window, self.lock, self.hits = fails, window, threading.Lock(), {}
+        self.sem = threading.BoundedSemaphore(slots)
+    def _recent(self, k, now):
+        v = self.hits[k] = [t for t in self.hits.get(k, []) if now - t < self.window]
+        if not v: del self.hits[k]
+        return v
+    def allow(self, *keys):
+        now = time.time()
+        with self.lock: return all(len(self._recent(k, now)) < self.fails for k in keys if k)
+    def fail(self, *keys):
+        with self.lock:
+            for k in keys:
+                if k: self.hits.setdefault(k, []).append(time.time())
+    @contextlib.contextmanager
+    def slot(self):
+        with self.sem: yield
 
 
 def _http_json(url):
