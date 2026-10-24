@@ -251,3 +251,22 @@ def test_rt01_breaker_open_does_not_burn_attempts(su, base, call, world, proj):
         assert b.complete(t, {}, str(uuid.uuid4()))["outcome"] == "OK"
     assert call("maint", "runtime.breaker_eval")["tst.emb"] == "closed"
     su.execute("UPDATE core.policies SET value = '10' WHERE scope = 'global' AND key = 'runtime.breaker.min_sample'"); su.commit()
+
+
+def test_concurrent_claims_one_holder(su, base, call, world, proj):
+    """Review 2 P0-3: workers claiming at the same time never get the same task."""
+    import threading
+    for _ in range(12): job(call, world, proj)
+    start(call)
+    got, errs = [], []
+    def run():
+        try:
+            with connect(base, "plugin_echo") as c:
+                b = SqlBinding(c)
+                while (ts := b.claim(1, ["0.1.0"], str(uuid.uuid4())).get("tasks")): got.extend(t["task_id"] for t in ts)
+        except Exception as e: errs.append(e)
+    th = [threading.Thread(target=run) for _ in range(4)]
+    for t in th: t.start()
+    for t in th: t.join()
+    running = su.execute("SELECT count(*) FROM runtime.tasks WHERE project_id = %s AND status = 'running'", (proj,)).fetchone()[0]
+    assert not errs and len(got) >= 2 and len(got) == len(set(got)) == running

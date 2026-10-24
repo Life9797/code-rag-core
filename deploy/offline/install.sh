@@ -12,7 +12,7 @@ ENV=repo/deploy/.env
 if [ ! -f "$ENV" ]; then
   cp repo/deploy/.env.example "$ENV"
   rnd() { head -c 18 /dev/urandom | base64 | tr -d '/+='; }
-  sed -i "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=$(rnd)|; s|^DB_PASSWORD=.*|DB_PASSWORD=$(rnd)|;
+  sed -i "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=$(rnd)|; 
           s|^MODELS_DIR=.*|MODELS_DIR=$B/models|; s|^EMBED_MODEL_ID=.*|EMBED_MODEL_ID=bge-m3@$EMB|" "$ENV"
   echo "OFFLINE=1" >> "$ENV"
 fi

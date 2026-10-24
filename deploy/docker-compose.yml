@@ -5,7 +5,7 @@
 name: coderag04
 
 x-env: &env
-  CODERAG_DSN_BASE: host=postgres port=5432 dbname=coderag password=${DB_PASSWORD}
+  CODERAG_DSN_BASE: host=postgres port=5432 dbname=coderag    # passwords: one per login, PGPASSFILE below (init writes them)
   CODERAG_EMBED_URL: ${EMBED_URL-http://embed:80}       # EMBED_URL= (empty) -> stub embedder (tests only)
   CODERAG_EMBED_API: ${EMBED_API:-tei}
   CODERAG_EMBED_MODEL: bge-m3
@@ -43,21 +43,26 @@ services:
     environment:
       <<: *env
       CODERAG_ADMIN_DSN: host=postgres port=5432 dbname=coderag user=postgres password=${POSTGRES_PASSWORD}
-      CODERAG_DB_PASSWORD: ${DB_PASSWORD}
+    volumes: ["../plugins:/app/plugins:ro", "${DATA_DIR:-../data}/vol:/data/vol", "${DATA_DIR:-../data}/keys:/data/keys",
+              "${DATA_DIR:-../data}/db:/data/db"]
     depends_on: { postgres: { condition: service_healthy } }
     restart: "no"
 
   api:
     <<: *app
     command: ["python", "-m", "coderag_core", "api", "--port", "8080"]
-    environment: *env
-    ports: ["${API_PORT:-8088}:8080"]
+    environment: { <<: *env, PGPASSFILE: /data/db/pgpass }
+    volumes: ["../plugins:/app/plugins:ro", "${DATA_DIR:-../data}/vol:/data/vol", "${DATA_DIR:-../data}/keys:/data/keys",
+              "${DATA_DIR:-../data}/db/api:/data/db:ro"]
+    ports: ["${API_BIND:-0.0.0.0}:${API_PORT:-8088}:8080"]     # plain HTTP: put a TLS reverse proxy in front, or API_BIND=127.0.0.1
     depends_on: { init: { condition: service_completed_successfully } }
 
   worker:
     <<: *app
     command: ["python", "-m", "coderag_core", "worker"]
-    environment: *env
+    environment: { <<: *env, PGPASSFILE: /data/db/pgpass }
+    volumes: ["../plugins:/app/plugins:ro", "${DATA_DIR:-../data}/vol:/data/vol", "${DATA_DIR:-../data}/keys:/data/keys",
+              "${DATA_DIR:-../data}/db/worker:/data/db:ro"]
     depends_on: { init: { condition: service_completed_successfully } }
 
   embed:                       # profile embed (COMPOSE_PROFILES=embed in .env); leave it out when EMBED_URL points elsewhere

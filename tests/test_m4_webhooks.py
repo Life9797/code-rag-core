@@ -71,3 +71,10 @@ def test_retry_redirect_dead_alert_and_membership(base, su, call, world, env):
     assert runner.deliver_webhooks(cn(base), lambda u, b, h: 204) == {}
     assert su.execute("SELECT state FROM core.outbox_deliveries WHERE subscription_id = %s ORDER BY event_id DESC LIMIT 1",
                       (env["sub"],)).fetchone()[0] == "dead"
+
+
+def test_allowlist_boundary_and_ssrf_guard(su, world, env):
+    for url, ok in (("https://ci.example/x.evil.org/", False), ("https://ci.example/xy", False), ("https://ci.example/x/y", True),
+                    ("https://ci.example/x", True), ("https://hooks.example.evil/", False)):
+        assert su.execute("SELECT core.webhook_allowed(%s, %s, %s)", (url, world["A"], env["p"])).fetchone()[0] is ok, url
+    assert runner._blocked("https://127.0.0.1/x") and runner._blocked("https://169.254.169.254/") and not runner._blocked("https://10.1.2.3/")

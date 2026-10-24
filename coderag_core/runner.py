@@ -1,7 +1,7 @@
 """Core loops (§28.2): the runtime loop (start jobs, Core publish stage, finish non-publishing jobs) and the
 maintenance loop (sweep, breaker, indexes, GC, snapshot retention, project purge with plugin hooks). Each call
 uses its own login: runtime, maint, purge, and plugin_<id> for purge hooks (I-S1, I-P2)."""
-import base64, hashlib, hmac, importlib, json, logging, time
+import base64, hashlib, hmac, importlib, json, logging, os, time
 from . import secrets, storage
 
 log = logging.getLogger("coderag.runner")
@@ -19,7 +19,7 @@ def runtime_tick(connect):
     return {"started": started, "published": published, "done": done}
 
 
-def maint_tick(connect, manifests=None, vol_root=None):
+def maint_tick(connect, manifests=None, vol_root=None, webhooks=True):
     out = {}
     with connect("maint") as c:
         out["sweep"] = q(c, "SELECT runtime.sweep(500)")
@@ -29,15 +29,43 @@ def maint_tick(connect, manifests=None, vol_root=None):
         out["gc"] = q(c, "SELECT knowledge.gc_all()")
         out["backup_mode"] = q(c, "SELECT core.backup_mode()")
         pruned = [] if out["backup_mode"] else q(c, "SELECT core.snapshot_retention(1000)")["pruned"]   # §38: no file deletes
+        live = None if out["backup_mode"] else set(q(c, "SELECT core.live_snapshot_refs()"))
     for ref in pruned:
-        if ref.startswith("vol://"): storage.remove(ref, vol_root)
+        if ref.startswith("vol://"): storage.remove_tree(ref, vol_root)      # snapshots are folders
+    if live is not None: out["orphans"] = sweep_orphans(live, vol_root)
     out["purge"] = purge(connect, manifests or {})
-    out["webhooks"] = deliver_webhooks(connect)
+    if webhooks: out["webhooks"] = deliver_webhooks(connect)
     return out
+
+
+def sweep_orphans(live, vol_root=None, min_age_s=3600, max=100):
+    """Review 9: folders under vol://sources with no live revision row (crash between row and file delete, failed or
+    interrupted upload) are removed once older than min_age_s, so uploads in flight are never touched."""
+    base, n = os.path.join(vol_root or storage.ROOT, "sources"), 0
+    for src in (os.listdir(base) if os.path.isdir(base) else []):
+        for name in os.listdir(os.path.join(base, src)):
+            ref, path = f"vol://sources/{src}/{name}", os.path.join(base, src, name)
+            if ref in live or time.time() - os.path.getmtime(path) < min_age_s: continue
+            storage.remove_tree(ref, vol_root); n += 1
+            if n >= max: return n
+    return n
+
+
+def _blocked(url):
+    """SSRF guard at send time: loopback, link-local (cloud metadata), multicast, unspecified and reserved addresses are
+    never targets; CODERAG_WEBHOOK_BLOCK_PRIVATE=1 also blocks private ranges (off: closed networks post to LAN hosts)."""
+    import ipaddress, socket, urllib.parse
+    u = urllib.parse.urlsplit(url)
+    try: addrs = {ipaddress.ip_address(a[4][0].split("%")[0]) for a in socket.getaddrinfo(u.hostname, u.port or 443)}
+    except (OSError, ValueError): return True
+    priv = os.environ.get("CODERAG_WEBHOOK_BLOCK_PRIVATE") == "1"
+    return not addrs or any(a.is_loopback or a.is_link_local or a.is_multicast or a.is_unspecified or a.is_reserved
+                            or (priv and a.is_private) for a in addrs)
 
 
 def _post(url, body, headers):
     import httpx
+    if _blocked(url): return None
     try:
         r = httpx.post(url, content=body, headers=headers, timeout=10, follow_redirects=False)   # redirects are failures (ST-28)
         return r.status_code
@@ -45,19 +73,20 @@ def _post(url, body, headers):
         return None
 
 
-def deliver_webhooks(connect, post=_post, max=100):
+def deliver_webhooks(connect, post=_post, max=100, budget_s=60):
     """G1 M4: payload = ids only; X-CodeRag-Signature: t=<unix>,v1=hex(HMAC-SHA256(secret, "<t>.<body>")); event id for dedupe."""
-    done = {}
+    done, t0 = {}, time.time()
     with connect("maint") as c:
         for d in q(c, "SELECT core.webhook_due(%s)", max):
+            if time.time() - t0 > budget_s: break                  # rest stays pending for the next round
             body = json.dumps({"id": d["event_id"], "type": d["type"], "created_at": d["created_at"], "data": d["payload"]},
                               sort_keys=True).encode()
             try: key = secrets.decrypt(d["key_id"], base64.b64decode(d["secret"]))
             except (KeyError, ValueError, OSError):
-                log.warning("webhook %s: secret key %s not available", d["subscription_id"], d["key_id"]); continue
+                log.warning("webhook %s: secret key %s not available", d["subscription_id"], d["key_id"]); key = None
             ts = str(int(time.time()))
-            sig = hmac.new(key.encode(), ts.encode() + b"." + body, hashlib.sha256).hexdigest()
-            st = post(d["url"], body, {"Content-Type": "application/json", "X-CodeRag-Event-Id": str(d["event_id"]),
+            sig = key and hmac.new(key.encode(), ts.encode() + b"." + body, hashlib.sha256).hexdigest()
+            st = None if key is None else post(d["url"], body, {"Content-Type": "application/json", "X-CodeRag-Event-Id": str(d["event_id"]),
                                        "X-CodeRag-Signature": f"t={ts},v1={sig}"})
             done[f"{d['event_id']}:{d['subscription_id']}"] = q(c, "SELECT core.webhook_mark(%s, %s, %s, %s)", d["event_id"],
                                                                d["subscription_id"], st is not None and 200 <= st < 300, st)["outcome"]
@@ -83,6 +112,14 @@ def purge(connect, manifests):
                     q(c, "SELECT core.purge_hook_done(%s, %s)", p, plug)
             done[str(p)] = r["outcome"]
     return done
+
+
+def webhook_loop(connect, interval=5.0):
+    """Own thread (review 8): slow receivers cannot stall sweep, breaker or GC."""
+    while True:
+        try: deliver_webhooks(connect)
+        except Exception: log.exception("webhooks failed")
+        time.sleep(interval)
 
 
 def loop(connect, manifests, interval=2.0):

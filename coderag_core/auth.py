@@ -1,6 +1,6 @@
 """Service tokens (P-P4, MG-05..07): argon2id secrets, ES256 JWT with kid, JWKS, per-request client check.
 The DB never sees a secret; the api never reads secret_hash (two definer calls, MG-06)."""
-import base64, json, os, secrets, time, uuid
+import base64, contextlib, json, os, secrets, threading, time, uuid
 import jwt
 from argon2 import PasswordHasher, low_level
 from cryptography.hazmat.primitives import serialization
@@ -45,13 +45,24 @@ def issue_token(conn, client_id, secret, ttl=3600):
     return jwt.encode(claims, pk, algorithm="ES256", headers={"kid": key["kid"]})
 
 
+_JWKS = {"at": 0.0, "keys": {}}
+
+
+def _jwks(cur, kid, ttl=30):
+    """Core JWKS cached for ttl s (review 7); an unknown kid (rotation) refetches. Revocation stays per request."""
+    age = time.time() - _JWKS["at"]
+    if age > ttl or kid not in _JWKS["keys"]:
+        cur.execute("SELECT core.jwks()")
+        _JWKS.update(at=time.time(), keys={k["kid"]: k for k in cur.fetchone()[0]})
+    return _JWKS["keys"].get(kid)
+
+
 def verify_token(conn, token):
     """Returns claims or None (-> 401): bad signature, unknown kid, wrong aud, expired, revoked client."""
     try:
         kid = jwt.get_unverified_header(token).get("kid")
         with conn.cursor() as cur:
-            cur.execute("SELECT core.jwks()")
-            jwk = next((k for k in cur.fetchone()[0] if k["kid"] == kid), None)
+            jwk = _jwks(cur, kid)
             if jwk is None: return None
             claims = jwt.decode(token, jwt.PyJWK(jwk).key, algorithms=["ES256"], audience=AUD)
             cur.execute("SELECT core.client_active(%s)", (claims["client"],))
@@ -74,6 +85,28 @@ def rotate_key(conn, keys_dir, principal_id=None):
         return cur.fetchone()[0]
 
 
+class Limiter:
+    """Token endpoint guard: at most `fails` failures per client id and per source address in `window` s (then 429),
+    and at most `slots` argon2 checks at once (64 MB each). In-process; one api process per host (§28.2)."""
+    def __init__(self, fails=10, window=60, slots=4):
+        self.fails, self.window, self.lock, self.hits = fails, window, threading.Lock(), {}
+        self.sem = threading.BoundedSemaphore(slots)
+    def _recent(self, k, now):
+        v = self.hits[k] = [t for t in self.hits.get(k, []) if now - t < self.window]
+        if not v: del self.hits[k]
+        return v
+    def allow(self, *keys):
+        now = time.time()
+        with self.lock: return all(len(self._recent(k, now)) < self.fails for k in keys if k)
+    def fail(self, *keys):
+        with self.lock:
+            for k in keys:
+                if k: self.hits.setdefault(k, []).append(time.time())
+    @contextlib.contextmanager
+    def slot(self):
+        with self.sem: yield
+
+
 def _http_json(url):
     import urllib.request
     with urllib.request.urlopen(url, timeout=10) as r: return json.loads(r.read())
@@ -84,6 +117,7 @@ class Oidc:
     The API accepts the issuer's access tokens (signature via its JWKS, iss, exp, and aud or azp) and maps (iss, sub) to a
     principal through core.external_identities; an unlinked identity gets 401 until a tenant admin links it."""
     def __init__(self, issuer, client_id=None, audience=None, jwks_url=None, fetch=None):
+        if not (client_id or audience): raise ValueError("OIDC needs CODERAG_OIDC_AUDIENCE or CODERAG_OIDC_CLIENT_ID")   # fail closed
         self.issuer, self.client_id, self.audience = issuer.rstrip("/"), client_id, audience
         self.jwks_url, self.fetch, self._keys, self._at = jwks_url, fetch or _http_json, {}, 0.0
 

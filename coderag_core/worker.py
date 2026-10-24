@@ -1,6 +1,13 @@
 """Worker Protocol v1 client (§6.2, D-15). Binding 1 = in-process SQL (SqlBinding); binding 2 = HTTP with the
-same messages (coderag_core.http_binding). Handlers get a TaskCtx and never touch runtime tables."""
+same messages (HttpBinding below). Handlers get a TaskCtx and never touch runtime tables."""
 import base64, importlib, json, os, threading, uuid
+
+
+class LeaseLost(Exception):
+    """The task's lease is gone (heartbeat said STALE_LEASE / ALREADY_TERMINAL): stop, every write would be refused."""
+
+
+LOST = ("STALE_LEASE", "ALREADY_TERMINAL", "FORBIDDEN")
 
 
 class PluginError(Exception):
@@ -50,35 +57,42 @@ class SqlBinding:
 
 class TaskCtx:
     def __init__(self, binding, task, db):
-        self.b, self.task, self.db, self.split_result = binding, task, db, None
+        self.b, self.task, self.db, self.split_result, self.lost = binding, task, db, None, None
         self.policy = task["policy"]
+    def check(self):
+        """Long handlers call this between steps; stage writes call it too."""
+        if self.lost: raise LeaseLost(self.lost)
+    def _stage(self, op, **kw):
+        self.check(); return self.b.stage(op, self.task, **kw)
     def split(self, children):
-        self.split_result = self.b.split(self.task, children, str(uuid.uuid4()))
+        self.check(); self.split_result = self.b.split(self.task, children, str(uuid.uuid4()))
         return self.split_result
     def heartbeat(self, checkpoint=None, extend=False):
-        return self.b.heartbeat(self.task, checkpoint, extend)
+        r = self.b.heartbeat(self.task, checkpoint, extend)
+        if r.get("outcome") in LOST: self.lost = r["outcome"]
+        return r
     def put_unit(self, kind, key, content_hash, attrs=None, chunks=None, on_behalf_of=None):
-        return self.b.stage("put_unit", self.task, kind=kind, key=key, content_hash=content_hash, attrs=attrs or {},
+        return self._stage("put_unit", kind=kind, key=key, content_hash=content_hash, attrs=attrs or {},
                             chunks=chunks or [], on_behalf_of=on_behalf_of)
     def put_representation(self, rep_kind, config_hash, input_hash, unit_version_id=None, chunk_id=None, vec=None, body=None):
-        return self.b.stage("put_representation", self.task, rep_kind=rep_kind, config_hash=config_hash, input_hash=input_hash,
+        return self._stage("put_representation", rep_kind=rep_kind, config_hash=config_hash, input_hash=input_hash,
                             unit_version_id=unit_version_id, chunk_id=chunk_id,
                             vec=None if vec is None else "[" + ",".join(map(str, vec)) + "]", body=body)
-    def touch(self, kind, keys): return self.b.stage("mark_units", self.task, mode="touch", kind=kind, keys=list(keys))
-    def hold(self, kind, keys, reason): return self.b.stage("mark_units", self.task, mode="hold", kind=kind, keys=list(keys), reason=reason)
+    def touch(self, kind, keys): return self._stage("mark_units", mode="touch", kind=kind, keys=list(keys))
+    def hold(self, kind, keys, reason): return self._stage("mark_units", mode="hold", kind=kind, keys=list(keys), reason=reason)
     def get_values(self, rep_kind, config_hash, input_hashes):
-        return self.b.stage("get_values", self.task, rep_kind=rep_kind, config_hash=config_hash, input_hashes=list(input_hashes))["values"]
-    def task_input(self): return self.b.stage("task_input", self.task)
+        return self._stage("get_values", rep_kind=rep_kind, config_hash=config_hash, input_hashes=list(input_hashes))["values"]
+    def task_input(self): return self._stage("task_input")
     def search(self, query, qvecs=None, filters=None, k=10):
-        return self.b.stage("task_search", self.task, query=query, qvecs=qvecs or {}, filters=filters or {}, k=k)
+        return self._stage("task_search", query=query, qvecs=qvecs or {}, filters=filters or {}, k=k)
     def connector_secret(self, connector, name="default"):
         """P-P12: own tenant + own plugin's connector only; ciphertext from Core, decrypted here with the host key."""
-        r = self.b.stage("get_connector_secret", self.task, connector=connector, name=name)
+        r = self._stage("get_connector_secret", connector=connector, name=name)
         if r.get("outcome") != "OK": raise PermissionError(r.get("outcome"))
         from . import secrets
         return secrets.decrypt(r["key_id"], base64.b64decode(r["ciphertext"]))
     def put_job_item(self, key, status, code=None, detail=None):
-        return self.b.stage("put_job_item", self.task, key=key, status=status, code=code, detail=detail or {})
+        return self._stage("put_job_item", key=key, status=status, code=code, detail=detail or {})
 
 
 class Worker:
@@ -90,7 +104,7 @@ class Worker:
         mod = importlib.import_module(manifest["entry"])
         return cls(manifest["id"], manifest["version"], mod.HANDLERS, binding, db)
 
-    def run_once(self, max=8):
+    def run_once(self, max=1):                                     # one at a time: queued claims would sit unbeaten (review 2)
         r = self.b.claim(max, [self.version], str(uuid.uuid4()))
         for t in r.get("tasks", []):
             self.run_task(t)
@@ -103,8 +117,9 @@ class Worker:
         stop = threading.Event()
         def beat():                                                # keeps the lease while the handler works (§33 grace)
             while not stop.wait(self.HEARTBEAT_S):
-                try: self.b.heartbeat(t)
-                except Exception: pass
+                try: r = self.b.heartbeat(t)
+                except Exception: continue                         # DB blip: retry; a lapsed lease shows up as STALE_LEASE
+                if r.get("outcome") in LOST: ctx.lost = r["outcome"]; return
         threading.Thread(target=beat, daemon=True).start()
         try:
             return self._run(ctx, t)
@@ -114,9 +129,12 @@ class Worker:
     def _run(self, ctx, t):
         try:
             out = self.handlers[t["handler"].split(".", 1)[1]](ctx, t)
+            ctx.check()
             if ctx.split_result is None:
                 return self.b.complete(t, out or {}, str(uuid.uuid4()))
             return ctx.split_result
+        except LeaseLost as e:                                     # another holder owns it now: report nothing
+            return {"outcome": str(e)}
         except PluginError as e:
             return self.b.fail(t, e.code, e.detail, str(uuid.uuid4()))
         except Exception as e:                                     # crash: retryable core code, no text leak
