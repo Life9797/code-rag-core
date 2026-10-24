@@ -106,6 +106,7 @@ class Oidc:
     The API accepts the issuer's access tokens (signature via its JWKS, iss, exp, and aud or azp) and maps (iss, sub) to a
     principal through core.external_identities; an unlinked identity gets 401 until a tenant admin links it."""
     def __init__(self, issuer, client_id=None, audience=None, jwks_url=None, fetch=None):
+        if not (client_id or audience): raise ValueError("OIDC needs CODERAG_OIDC_AUDIENCE or CODERAG_OIDC_CLIENT_ID")   # fail closed
         self.issuer, self.client_id, self.audience = issuer.rstrip("/"), client_id, audience
         self.jwks_url, self.fetch, self._keys, self._at = jwks_url, fetch or _http_json, {}, 0.0
 

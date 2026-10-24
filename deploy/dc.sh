@@ -9,6 +9,6 @@ F=(-f docker-compose.yml)
 [ -n "$(envv LLM_NETWORK)" ] && F+=(-f compose/llm-network.yml)
 W=$(envv WEBUI_NETWORK); [ -n "$W" ] && [ "$W" != "$(envv LLM_NETWORK)" ] && F+=(-f compose/webui-network.yml)
 [ "$(envv OFFLINE)" = 1 ] && F+=(-f offline/docker-compose.offline.yml)
-D=$(envv DATA_DIR); mkdir -p "${D:-../data}/vol" "${D:-../data}/keys"
+D=$(envv DATA_DIR); mkdir -p "${D:-../data}/vol" "${D:-../data}/keys" "${D:-../data}/db/api" "${D:-../data}/db/worker"
 chown -R 1000:1000 "${D:-../data}" 2>/dev/null || echo "note: ${D:-../data} must be writable by uid 1000 (the api/worker user)"
 exec docker compose "${F[@]}" "$@"

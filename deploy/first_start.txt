@@ -1,7 +1,7 @@
 
 If that’s the GitHub source zip, run these from the unzipped folder on the GPU host:
 
-cp deploy/.env.example deploy/.env, then set POSTGRES_PASSWORD and DB_PASSWORD. Check that LLM_* points at your vLLM, and set WEBUI_NETWORK to your Open WebUI’s Docker network.
+cp deploy/.env.example deploy/.env, then set POSTGRES_PASSWORD (init gives each service login its own password). Check that LLM_* points at your vLLM, and set WEBUI_NETWORK to your Open WebUI’s Docker network.
 Put bge-m3 in models/bge-m3. If you already run an embedding server, set EMBED_URL and leave COMPOSE_PROFILES empty.
 bash deploy/dc.sh up -d --build, then bash deploy/dc.sh ps.
 

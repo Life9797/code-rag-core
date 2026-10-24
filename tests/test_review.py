@@ -32,3 +32,24 @@ def test_claims_one_and_stops_on_lost_lease(monkeypatch):
 def test_live_lease_completes(monkeypatch):
     _, calls = run("EXTENDED", monkeypatch)
     assert calls[-1] == ("complete",)
+
+
+def test_oidc_fails_closed():
+    import pytest
+    from coderag_core import auth
+    with pytest.raises(ValueError): auth.Oidc("https://kc/realms/x")
+
+
+def test_db_logins_per_role(base, tmp_path):
+    import json, os, stat
+    from conftest import DB
+    from coderag_core.__main__ import db_logins
+    db_logins(f"{base} user=postgres dbname={DB}", str(tmp_path))
+    pw = json.load(open(tmp_path / "roles.json"))
+    assert {"api", "runtime", "maint", "purge"} <= pw.keys() and len(set(pw.values())) == len(pw)
+    api_f, wk_f = (tmp_path / "api/pgpass").read_text(), (tmp_path / "worker/pgpass").read_text()
+    assert ":maint:" not in api_f and ":api:" not in wk_f and ":plugin_echo:" in api_f
+    assert stat.S_IMODE(os.stat(tmp_path / "api/pgpass").st_mode) == 0o600
+    db_logins(f"{base} user=postgres dbname={DB}", str(tmp_path))
+    assert json.load(open(tmp_path / "roles.json")) == pw                 # re-init keeps passwords
+    os.environ.pop("PGPASSFILE", None)
