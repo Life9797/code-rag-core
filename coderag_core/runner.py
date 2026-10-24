@@ -29,11 +29,26 @@ def maint_tick(connect, manifests=None, vol_root=None, webhooks=True):
         out["gc"] = q(c, "SELECT knowledge.gc_all()")
         out["backup_mode"] = q(c, "SELECT core.backup_mode()")
         pruned = [] if out["backup_mode"] else q(c, "SELECT core.snapshot_retention(1000)")["pruned"]   # §38: no file deletes
+        live = None if out["backup_mode"] else set(q(c, "SELECT core.live_snapshot_refs()"))
     for ref in pruned:
         if ref.startswith("vol://"): storage.remove_tree(ref, vol_root)      # snapshots are folders
+    if live is not None: out["orphans"] = sweep_orphans(live, vol_root)
     out["purge"] = purge(connect, manifests or {})
     if webhooks: out["webhooks"] = deliver_webhooks(connect)
     return out
+
+
+def sweep_orphans(live, vol_root=None, min_age_s=3600, max=100):
+    """Review 9: folders under vol://sources with no live revision row (crash between row and file delete, failed or
+    interrupted upload) are removed once older than min_age_s, so uploads in flight are never touched."""
+    base, n = os.path.join(vol_root or storage.ROOT, "sources"), 0
+    for src in (os.listdir(base) if os.path.isdir(base) else []):
+        for name in os.listdir(os.path.join(base, src)):
+            ref, path = f"vol://sources/{src}/{name}", os.path.join(base, src, name)
+            if ref in live or time.time() - os.path.getmtime(path) < min_age_s: continue
+            storage.remove_tree(ref, vol_root); n += 1
+            if n >= max: return n
+    return n
 
 
 def _blocked(url):

@@ -53,3 +53,23 @@ def test_db_logins_per_role(base, tmp_path):
     db_logins(f"{base} user=postgres dbname={DB}", str(tmp_path))
     assert json.load(open(tmp_path / "roles.json")) == pw                 # re-init keeps passwords
     os.environ.pop("PGPASSFILE", None)
+
+
+def test_orphan_sweep(tmp_path):
+    import os
+    from coderag_core import runner
+    for n in ("live", "orphan", "fresh"): os.makedirs(tmp_path / "sources" / "s1" / n)
+    os.utime(tmp_path / "sources/s1/live", (0, 0)); os.utime(tmp_path / "sources/s1/orphan", (0, 0))
+    assert runner.sweep_orphans({"vol://sources/s1/live"}, str(tmp_path)) == 1
+    assert sorted(os.listdir(tmp_path / "sources/s1")) == ["fresh", "live"]
+
+
+def test_zip_case_duplicates_and_size_lie(tmp_path):
+    import os, pytest, zipfile
+    from coderag_core import files
+    z = tmp_path / "a.zip"
+    with zipfile.ZipFile(z, "w") as f: f.writestr("A.py", "x"); f.writestr("a.py", "y")
+    with pytest.raises(files.InputError): files.safe_extract(str(z), "vol://sources/t/1", str(tmp_path), strip_root=False)
+    with zipfile.ZipFile(z, "w") as f: f.writestr("b.py", "x" * 100)
+    man = files.safe_extract(str(z), "vol://sources/t/2", str(tmp_path), strip_root=False)
+    assert man["files"][0]["size"] == 100 and sorted(os.listdir(tmp_path / "sources/t")) == ["2"]
