@@ -72,7 +72,32 @@ def test_upload_paste_job_search(base, su, call, world, h):
     assert bad.status_code == 400
     assert c.get("/core/v1/projects").status_code == 401
     assert c.post("/core/v1/token", data={"client_id": "", "client_secret": ""}).status_code == 401
+    h["last"] = {"p": p, "s": s, "job": r["job"]["job_id"], "rev": r["revision_id"]}
     stop_project_jobs(su, p)
+
+
+def test_other_tenant_ids_refused(su, world, h):
+    """Review 2 P0-1: a tenant-B admin token gets nothing from tenant A's ids over the HTTP API."""
+    c, x = h["c"], h["last"]
+    r, secret = issue_client(su, world["root"], world["B"], f"svc-b-{uuid.uuid4().hex[:4]}", 4)
+    B = {"Authorization": "Bearer " + c.post("/core/v1/token", data={"client_id": r["client_id"], "client_secret": secret}).json()["access_token"]}
+    for path in (f"/core/v1/projects/{x['p']}", f"/core/v1/jobs/{x['job']}", f"/core/v1/jobs/{x['job']}/items",
+                 f"/core/v1/projects/{x['p']}/jobs", f"/core/v1/tenants/{world['A']}"):
+        res = c.get(path, headers=B)
+        assert res.status_code in (403, 404), (path, res.json())
+    for path, body in ((f"/core/v1/sources/{x['s']}/revisions", {"files": [{"path": "a.py", "text": "x"}]}),
+                       (f"/core/v1/jobs/{x['job']}/cancel", {}), (f"/core/v1/projects/{x['p']}/members", {"tenant": str(world["A"])}),
+                       ("/core/v1/jobs", {"project": x["p"], "plugin": "code", "pipeline": "index", "revision": x["rev"]})):
+        assert c.post(path, json=body, headers=B).status_code in (403, 404), path
+    hits = c.post("/core/v1/search", json={"projects": [x["p"]], "query": "pay cart checkout"}, headers=B).json()
+    assert hits["outcome"] in ("FORBIDDEN", "NOT_FOUND") or not hits.get("hits"), hits
+
+
+def test_token_rate_limit(h):
+    c = h["c"]
+    codes = [c.post("/core/v1/token", data={"client_id": "00000000-0000-0000-0000-00000000000a", "client_secret": "x"}).status_code
+             for _ in range(12)]
+    assert codes[0] == 401 and codes[-1] == 429
 
 
 def test_status_and_approve_routes(su, call, world, h):
