@@ -72,3 +72,43 @@ def rotate_key(conn, keys_dir, principal_id=None):
     with conn.cursor() as cur:
         cur.execute("SELECT core.signing_key_rotate(%s, %s, %s::jsonb, %s)", (principal_id, kid, json.dumps(pub), path))
         return cur.fetchone()[0]
+
+
+def _http_json(url):
+    import urllib.request
+    with urllib.request.urlopen(url, timeout=10) as r: return json.loads(r.read())
+
+
+class Oidc:
+    """Human sign-in through Keycloak (or any OIDC issuer), off unless CODERAG_OIDC_ISSUER is set (P-P5 "human OIDC later").
+    The API accepts the issuer's access tokens (signature via its JWKS, iss, exp, and aud or azp) and maps (iss, sub) to a
+    principal through core.external_identities; an unlinked identity gets 401 until a tenant admin links it."""
+    def __init__(self, issuer, client_id=None, audience=None, jwks_url=None, fetch=None):
+        self.issuer, self.client_id, self.audience = issuer.rstrip("/"), client_id, audience
+        self.jwks_url, self.fetch, self._keys, self._at = jwks_url, fetch or _http_json, {}, 0.0
+
+    @classmethod
+    def from_env(cls):
+        e = lambda k: os.environ.get(k) or None
+        return cls(e("CODERAG_OIDC_ISSUER"), e("CODERAG_OIDC_CLIENT_ID"), e("CODERAG_OIDC_AUDIENCE"), e("CODERAG_OIDC_JWKS_URL")) \
+            if e("CODERAG_OIDC_ISSUER") else None
+
+    def _key(self, kid):
+        if kid not in self._keys and time.time() - self._at > 30:     # refetch on an unknown kid (key rotation), at most every 30 s
+            url = self.jwks_url or self.fetch(self.issuer + "/.well-known/openid-configuration")["jwks_uri"]
+            self._keys, self._at = {k["kid"]: k for k in self.fetch(url)["keys"] if k.get("use", "sig") == "sig"}, time.time()
+        return self._keys.get(kid)
+
+    def verify(self, token):
+        """{issuer, subject, username} for a valid token of this issuer, else None."""
+        try:
+            if (jwt.decode(token, options={"verify_signature": False}).get("iss") or "").rstrip("/") != self.issuer: return None
+            jwk = self._key(jwt.get_unverified_header(token).get("kid"))
+            if jwk is None: return None
+            cl = jwt.decode(token, jwt.PyJWK(jwk).key, algorithms=["RS256", "PS256", "ES256"], audience=self.audience,
+                            options={"verify_aud": bool(self.audience), "require": ["exp", "sub"]})
+            if (cl.get("iss") or "").rstrip("/") != self.issuer: return None
+            if not self.audience and self.client_id and cl.get("azp") != self.client_id: return None
+            return {"issuer": self.issuer, "subject": cl["sub"], "username": cl.get("preferred_username") or cl.get("email") or ""}
+        except (jwt.PyJWTError, KeyError, ValueError, OSError):
+            return None

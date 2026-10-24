@@ -5,6 +5,7 @@
   verify                         §38 restore check (files, plugin folders, secrets); exit 1 when not ok
   rotate-key KEYS_DIR            new JWT signing key (MG-07)
   issue-client ADMIN TENANT NAME ROLE   service client via MG-05 (prints client_id and the secret once)
+  link-identity PRINCIPAL ISSUER SUBJECT  Keycloak account -> existing principal (e.g. the platform admin; /admin shows both values)
 """
 import json, sys, uuid
 import psycopg
@@ -48,4 +49,10 @@ if __name__ == "__main__":
     elif cmd == "issue-client":
         r, s = issue_client(conn, args[0], args[1], args[2], int(args[3]))
         print(json.dumps({**r, "secret": s}))
+    elif cmd == "link-identity":
+        with conn.transaction():
+            conn.execute("INSERT INTO core.external_identities (issuer, subject, principal_id) VALUES (%s, %s, %s)",
+                         (args[1].rstrip("/"), args[2], args[0]))
+            conn.execute("SELECT core.audit_write(NULL, 'identity_link', %s)", (f"principal:{args[0]}",))
+        print("linked")
     else: sys.exit(__doc__)

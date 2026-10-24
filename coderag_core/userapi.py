@@ -6,9 +6,9 @@ import hashlib, importlib, io, json, os, re, tempfile, uuid
 from fastapi import APIRouter, Depends, Request, UploadFile, File, Form
 from fastapi.responses import JSONResponse
 import secrets as pysecrets
-from . import files, secrets, storage
+from . import auth, files, secrets, storage
 
-STATUS = {"DESTINATION_NOT_ALLOWED": 400, "HASH_MISMATCH": 409, "EXPIRED": 409, "ALREADY_DECIDED": 409, "FORBIDDEN": 403, "NOT_FOUND": 404, "INPUT_INVALID": 400, "REQUEST_ID_REUSED": 409, "PROJECT_DELETING": 409}
+STATUS = {"NAME_TAKEN": 409, "LAST_ADMIN": 409, "NOT_TENANT_MEMBER": 409, "EXISTS": 409, "UNKNOWN_KEY": 400, "DESTINATION_NOT_ALLOWED": 400, "HASH_MISMATCH": 409, "EXPIRED": 409, "ALREADY_DECIDED": 409, "FORBIDDEN": 403, "NOT_FOUND": 404, "INPUT_INVALID": 400, "REQUEST_ID_REUSED": 409, "PROJECT_DELETING": 409}
 PASTE = re.compile(r"^[A-Za-z0-9_.\-/]{1,200}$")
 
 
@@ -35,6 +35,41 @@ def user_router(settings, claims, manifests) -> APIRouter:
     async def body(req):
         try: return await req.json()
         except ValueError: return {}
+
+    # ---------- admin page (§43): tenants, principals, service clients, project detail ----------
+    @r.post("/tenants")
+    async def tenant_create(req: Request, cl=Depends(claims)):
+        b = await body(req); return out(call("core.tenant_create", cl["sub"], b.get("name"), rid(b)))
+
+    @r.get("/tenants/{tenant}")
+    def tenant_detail(tenant: str, cl=Depends(claims)): return out(call("core.tenant_detail", cl["sub"], tenant))
+
+    @r.post("/tenants/{tenant}/members")
+    async def tenant_member(tenant: str, req: Request, cl=Depends(claims)):
+        """{principal, role: 1..4 | null = remove}"""
+        b = await body(req); return out(call("core.member_change", cl["sub"], tenant, None, b.get("principal"), b.get("role"), rid(b)))
+
+    @r.post("/tenants/{tenant}/principals")
+    async def principal_create(tenant: str, req: Request, cl=Depends(claims)):
+        """{name, role, issuer?, subject?}: a person; issuer + subject link a Keycloak account (whoami shows both)."""
+        b = await body(req)
+        return out(call("core.principal_create", cl["sub"], tenant, "human", b.get("name"), b.get("role"),
+                        (b.get("issuer") or "").rstrip("/") or None, b.get("subject") or None, rid(b)))
+
+    @r.post("/tenants/{tenant}/clients")
+    async def client_create(tenant: str, req: Request, cl=Depends(claims)):
+        """{name, role}: service client for Open WebUI or scripts; the secret is shown once."""
+        b = await body(req)
+        secret, h = auth.new_secret()
+        res = call("core.service_client_create", cl["sub"], tenant, b.get("name"), b.get("role"), ["core"], [auth.AUD], None, h, rid(b))
+        return out({**res, "secret": secret} if res.get("outcome") == "CREATED" and not res.get("replay") else res)
+
+    @r.delete("/clients/{client}")
+    async def client_revoke(client: str, req: Request, cl=Depends(claims)):
+        b = await body(req); return out(call("core.service_client_revoke", cl["sub"], client, rid(b)))
+
+    @r.get("/projects/{project}")
+    def project_detail(project: str, cl=Depends(claims)): return out(call("core.project_detail", cl["sub"], project))
 
     @r.get("/projects")
     def projects(cl=Depends(claims)): return out(call("core.list_projects", cl["sub"]))

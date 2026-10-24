@@ -3,6 +3,7 @@ Each request opens its own connection as the right login: `api` for user contrac
 import json, os
 import psycopg
 from fastapi import FastAPI, APIRouter, Depends, Header, HTTPException, Request
+from fastapi.responses import HTMLResponse
 from . import auth
 from .worker import STAGE_OPS, SqlBinding
 from .userapi import user_router
@@ -15,15 +16,42 @@ class Settings:
     def connect(self, login): return psycopg.connect(self.dsn_for(login), autocommit=True)
 
 
-def create_app(settings: Settings, manifests=None) -> FastAPI:
+def create_app(settings: Settings, manifests=None, oidc=None) -> FastAPI:
     app = FastAPI(title="code-rag core", version="0.4.0")
+    oidc = oidc if oidc is not None else auth.Oidc.from_env()
+
+    def identify(tok):
+        """(claims, unlinked identity): a Core token, or a linked Keycloak token mapped to its principal."""
+        if not tok: return None, None
+        with settings.connect("api") as c:
+            cl = auth.verify_token(c, tok)
+            if cl or not oidc: return cl, None
+            ident = oidc.verify(tok)
+            if not ident: return None, None
+            pid = c.execute("SELECT core.principal_for_identity(%s, %s)", (ident["issuer"], ident["subject"])).fetchone()[0]
+        return ({"sub": str(pid), "scope": "core", "via": "oidc"}, None) if pid else (None, ident)
 
     def claims(authorization: str = Header(default="")):
-        tok = authorization.removeprefix("Bearer ").strip()
-        with settings.connect("api") as c:
-            cl = auth.verify_token(c, tok) if tok else None
-        if not cl: raise HTTPException(401, "invalid token")
+        cl, ident = identify(authorization.removeprefix("Bearer ").strip())
+        if not cl: raise HTTPException(401, "identity_not_linked" if ident else "invalid token")
         return cl
+
+    @app.get("/core/v1/auth/config")
+    def auth_config():
+        return {"oidc": {"issuer": oidc.issuer, "client_id": oidc.client_id} if oidc else None}
+
+    @app.get("/core/v1/whoami")
+    def whoami(authorization: str = Header(default="")):
+        """Signed-in principal; for a Keycloak user not linked yet: the (issuer, subject) an admin needs to link."""
+        cl, ident = identify(authorization.removeprefix("Bearer ").strip())
+        if ident: return {"outcome": "NOT_LINKED", **ident}
+        if not cl: raise HTTPException(401, "invalid token")
+        with settings.connect("api") as c:
+            return c.execute("SELECT core.admin_overview(%s)", (cl["sub"],)).fetchone()[0]
+
+    @app.get("/admin", response_class=HTMLResponse)
+    def admin_page():
+        with open(os.path.join(os.path.dirname(__file__), "admin.html"), encoding="utf-8") as f: return f.read()
 
     @app.post("/core/v1/token")
     async def token(req: Request):

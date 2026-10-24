@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>code-rag 관리</title>
+<!-- Admin page (§43): one static file served by the api at /admin, no build step, no external files (air-gapped host).
+     Every action is an existing /core/v1 call; the page adds no logic of its own. Sign-in: service client, or Keycloak when
+     CODERAG_OIDC_ISSUER is set (authorization code + PKCE, token kept in sessionStorage for this tab only). -->
+<style>
+:root { --bg:#fff; --fg:#1d1d1f; --mute:#6e6e73; --line:#d9d9de; --acc:#2457d6; --bad:#c62828; --ok:#2e7d32; --card:#f6f6f8; }
+@media (prefers-color-scheme: dark) { :root { --bg:#161618; --fg:#ececf0; --mute:#9a9aa3; --line:#34343a; --acc:#7aa2ff; --bad:#ff6b6b; --ok:#6fcf73; --card:#1f1f23; } }
+* { box-sizing: border-box; }
+body { margin:0; font:14px/1.5 system-ui, -apple-system, "Segoe UI", "Malgun Gothic", sans-serif; background:var(--bg); color:var(--fg); }
+header { display:flex; gap:12px; align-items:center; flex-wrap:wrap; padding:10px 16px; border-bottom:1px solid var(--line); }
+header h1 { font-size:16px; margin:0 12px 0 0; }
+nav button { background:none; border:0; border-bottom:2px solid transparent; padding:6px 8px; color:var(--mute); cursor:pointer; font:inherit; }
+nav button.on { color:var(--fg); border-color:var(--acc); }
+main { padding:16px; max-width:1100px; }
+section { margin-bottom:24px; }
+h2 { font-size:15px; margin:0 0 8px; } h3 { font-size:14px; margin:16px 0 6px; }
+table { border-collapse:collapse; width:100%; margin-bottom:8px; }
+th, td { text-align:left; padding:5px 6px; border-bottom:1px solid var(--line); vertical-align:top; }
+th { color:var(--mute); font-weight:500; }
+input, select, button { font:inherit; color:inherit; background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:4px 8px; }
+button { cursor:pointer; } button.p { background:var(--acc); color:#fff; border-color:var(--acc); } button.x { color:var(--bad); }
+.row { display:flex; gap:6px; flex-wrap:wrap; align-items:center; margin:6px 0; }
+.card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:12px; }
+.mute { color:var(--mute); } .mono { font-family:ui-monospace, Consolas, monospace; font-size:12px; word-break:break-all; }
+#msg { position:fixed; right:16px; bottom:16px; max-width:420px; padding:8px 12px; border-radius:8px; display:none; background:var(--card); border:1px solid var(--line); }
+#msg.bad { border-color:var(--bad); } .wrap { overflow-x:auto; }
+@media (max-width:640px) { main { padding:12px; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>code-rag 관리</h1>
+  <nav id="tabs" hidden>
+    <button data-t="status">상태</button><button data-t="projects">프로젝트</button><button data-t="people">사용자·클라이언트</button>
+  </nav>
+  <span style="flex:1"></span>
+  <span id="me" class="mute"></span>
+  <select id="tenant" hidden></select>
+  <button id="logout" hidden>로그아웃</button>
+</header>
+<main id="main"></main>
+<div id="msg"></div>
+<script>
+"use strict";
+const S = sessionStorage, ROLES = {1: "1 읽기", 2: "2 기여", 3: "3 운영", 4: "4 관리자"};
+let tok = S.getItem("crTok"), me = null, tenant = S.getItem("crTenant"), tab = S.getItem("crTab") || "status", cfg = {};
+const $ = (q, el = document) => el.querySelector(q);
+const esc = v => String(v ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+const rid = () => crypto.getRandomValues(new Uint32Array(4)).join("-");
+function note(t, bad) { const m = $("#msg"); m.textContent = t; m.className = bad ? "bad" : ""; m.style.display = "block"; clearTimeout(note.t); note.t = setTimeout(() => m.style.display = "none", 6000); }
+async function api(method, path, body) {
+  const r = await fetch("/core/v1" + path, {method, headers: {"Authorization": "Bearer " + tok, "Content-Type": "application/json"},
+                                            body: body === undefined ? undefined : JSON.stringify({request_id: rid(), ...body})});
+  if (r.status === 401) { logout(); throw new Error("로그인이 만료되었습니다"); }
+  const j = await r.json().catch(() => ({outcome: "ERROR " + r.status}));
+  if (method !== "GET" && j.outcome && !["OK", "CREATED", "EXISTS"].includes(j.outcome)) note("실패: " + j.outcome, true);
+  return j;
+}
+const roleSel = (v, max = 4) => `<select>${[1, 2, 3, 4].filter(r => r <= max).map(r => `<option value="${r}" ${r == v ? "selected" : ""}>${ROLES[r]}</option>`).join("")}</select>`;
+
+// ---------- sign-in: service client or Keycloak (OIDC code + PKCE) ----------
+async function loginPage() {
+  $("#tabs").hidden = $("#tenant").hidden = $("#logout").hidden = true; $("#me").textContent = "";
+  $("#main").innerHTML = `<div class="card" style="max-width:420px">
+    <h2>로그인</h2>
+    ${cfg.oidc ? `<p><button class="p" id="kc">Keycloak으로 로그인</button></p><p class="mute">또는 서비스 클라이언트</p>` : ""}
+    <div class="row"><input id="cid" placeholder="client_id" style="flex:1"></div>
+    <div class="row"><input id="csec" type="password" placeholder="client_secret" style="flex:1"></div>
+    <div class="row"><button class="p" id="go">로그인</button></div></div>`;
+  $("#go").onclick = async () => {
+    const r = await fetch("/core/v1/token", {method: "POST", body: new URLSearchParams({client_id: $("#cid").value.trim(), client_secret: $("#csec").value.trim()})});
+    if (!r.ok) return note("client_id 또는 secret이 맞지 않습니다", true);
+    tok = (await r.json()).access_token; S.setItem("crTok", tok); start();
+  };
+  if (cfg.oidc) $("#kc").onclick = kcLogin;
+}
+const b64u = a => btoa(String.fromCharCode(...new Uint8Array(a))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+async function oidcMeta() { return (await fetch(cfg.oidc.issuer + "/.well-known/openid-configuration")).json(); }
+async function kcLogin() {
+  const m = await oidcMeta(), verifier = b64u(crypto.getRandomValues(new Uint8Array(32))), state = b64u(crypto.getRandomValues(new Uint8Array(16)));
+  S.setItem("crPkce", verifier); S.setItem("crState", state);
+  const q = new URLSearchParams({client_id: cfg.oidc.client_id, response_type: "code", scope: "openid", redirect_uri: location.origin + "/admin", state});
+  if (crypto.subtle) { q.set("code_challenge", b64u(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)))); q.set("code_challenge_method", "S256"); }
+  location.href = m.authorization_endpoint + "?" + q;          // plain http: no crypto.subtle -> no PKCE (Keycloak client must not require it)
+}
+async function kcReturn() {
+  const q = new URLSearchParams(location.search);
+  if (!q.get("code")) return false;
+  history.replaceState(null, "", "/admin");
+  if (q.get("state") !== S.getItem("crState")) { note("로그인 상태값이 맞지 않습니다", true); return false; }
+  const m = await oidcMeta();
+  const body = new URLSearchParams({grant_type: "authorization_code", code: q.get("code"), client_id: cfg.oidc.client_id, redirect_uri: location.origin + "/admin"});
+  if (crypto.subtle) body.set("code_verifier", S.getItem("crPkce"));
+  const r = await fetch(m.token_endpoint, {method: "POST", body});
+  if (!r.ok) { note("Keycloak 토큰 발급 실패 " + r.status, true); return false; }
+  tok = (await r.json()).access_token; S.setItem("crTok", tok); return true;
+}
+function logout() { tok = null; S.removeItem("crTok"); loginPage(); }
+
+// ---------- shell ----------
+async function start() {
+  const w = await fetch("/core/v1/whoami", {headers: {"Authorization": "Bearer " + tok}});
+  if (!w.ok) return logout();
+  const j = await w.json();
+  if (j.outcome === "NOT_LINKED") {
+    $("#main").innerHTML = `<div class="card"><h2>아직 연결되지 않은 계정입니다</h2>
+      <p>테넌트 관리자에게 아래 두 값을 전달해 주세요. 관리자가 <b>사용자·클라이언트 → 사람 추가</b>에 넣으면 로그인할 수 있습니다.</p>
+      <p>사용자: <b>${esc(j.username)}</b></p><p>issuer <span class="mono">${esc(j.issuer)}</span></p><p>subject <span class="mono">${esc(j.subject)}</span></p>
+      <button id="lo">로그아웃</button></div>`;
+    $("#lo").onclick = logout; return;
+  }
+  me = j;
+  $("#me").textContent = `${me.principal?.name || ""}${me.platform_admin ? " (플랫폼 관리자)" : ""}`;
+  const ts = $("#tenant"); ts.innerHTML = me.tenants.map(t => `<option value="${t.id}">${esc(t.name)} · ${ROLES[t.role] || t.role}</option>`).join("");
+  if (!me.tenants.some(t => t.id === tenant)) tenant = me.tenants[0]?.id || null;
+  ts.value = tenant || ""; ts.hidden = !me.tenants.length; ts.onchange = () => { tenant = ts.value; S.setItem("crTenant", tenant); show(tab); };
+  $("#tabs").hidden = $("#logout").hidden = false; $("#logout").onclick = logout;
+  document.querySelectorAll("#tabs button").forEach(b => b.onclick = () => show(b.dataset.t));
+  show(tab);
+}
+const tenantRole = () => (me.tenants.find(t => t.id === tenant) || {}).role || 0;
+async function show(t) {
+  tab = t; S.setItem("crTab", t);
+  document.querySelectorAll("#tabs button").forEach(b => b.classList.toggle("on", b.dataset.t === t));
+  $("#main").innerHTML = `<p class="mute">불러오는 중…</p>`;
+  try { await ({status, projects, people})[t](); } catch (e) { $("#main").innerHTML = `<p>${esc(e.message)}</p>`; }
+}
+
+// ---------- status: jobs, approvals, alerts ----------
+async function status() {
+  const s = await api("GET", "/status");
+  $("#main").innerHTML = `<section><h2>작업 (최근 하루)</h2><p>${Object.entries(s.jobs || {}).map(([k, v]) => `${esc(k)} <b>${v}</b>`).join(" · ") || "없음"}</p></section>
+    <section><h2>승인 대기</h2>${(s.waiting_approval || []).length ? `<div class="wrap"><table><tr><th>job</th><th>단계</th><th>기한</th><th>artifact sha256</th><th></th></tr>
+      ${s.waiting_approval.map(a => `<tr data-j="${a.job_id}" data-s="${esc(a.stage)}" data-h="${esc(a.artifact_sha256 || "")}"><td class="mono">${a.job_id}</td><td>${esc(a.stage)}</td>
+        <td>${esc(a.wait_until)}</td><td class="mono">${esc(a.artifact_sha256 || "-")}</td>
+        <td><button class="p" data-d="approve">승인</button> <button class="x" data-d="reject">거절</button></td></tr>`).join("")}</table></div>` : `<p class="mute">없음</p>`}</section>
+    ${s.alerts ? `<section><h2>경보</h2>${s.alerts.length ? `<div class="wrap"><table><tr><th>코드</th><th>대상</th><th>등급</th><th>횟수</th><th>마지막</th></tr>
+      ${s.alerts.map(a => `<tr><td>${esc(a.code)}</td><td class="mono">${esc(a.object)}</td><td>${esc(a.severity)}</td><td>${a.count}</td><td>${esc(a.last_at)}</td></tr>`).join("")}</table></div>` : `<p class="mute">없음</p>`}</section>` : ""}`;
+  $("#main").querySelectorAll("button[data-d]").forEach(b => b.onclick = async () => {
+    const tr = b.closest("tr");
+    const r = await api("POST", `/jobs/${tr.dataset.j}/approve`, {stage: tr.dataset.s, artifact_sha256: tr.dataset.h || null, decision: b.dataset.d});
+    if (r.outcome === "OK") note(b.dataset.d === "approve" ? "승인했습니다" : "거절했습니다"); status();
+  });
+}
+
+// ---------- projects ----------
+async function projects(sel) {
+  const ps = ((await api("GET", "/projects")).projects || []).filter(p => !tenant || p.tenant_id === tenant);
+  $("#main").innerHTML = `<section><h2>프로젝트</h2>
+    ${tenantRole() >= 3 ? `<div class="row"><input id="pn" placeholder="새 프로젝트 이름"><button class="p" id="pc">만들기</button><span class="mute">만들면 code 플러그인도 켭니다</span></div>` : ""}
+    <div class="wrap"><table><tr><th>이름</th><th>내 역할</th><th>상태</th></tr>
+    ${ps.map(p => `<tr><td><a href="#" data-p="${p.id}">${esc(p.name)}</a></td><td>${ROLES[p.role]}</td><td>${esc(p.state)}</td></tr>`).join("")}</table></div></section><div id="pd"></div>`;
+  if ($("#pc")) $("#pc").onclick = async () => {
+    const r = await api("POST", "/projects", {tenant, name: $("#pn").value.trim()});
+    if (r.outcome === "CREATED") { await api("POST", `/projects/${r.id}/plugins/code`, {enabled: true}); note("만들었습니다"); projects(r.id); }
+  };
+  $("#main").querySelectorAll("a[data-p]").forEach(a => a.onclick = e => { e.preventDefault(); project(a.dataset.p); });
+  if (sel) project(sel);
+}
+async function project(id) {
+  const d = await api("GET", `/projects/${id}`), p = d.project, admin = p.role >= 4, op = p.role >= 3;
+  const td = tenantRole() >= 4 ? await api("GET", `/tenants/${p.tenant_id}`) : {members: []};
+  const jobs = (await api("GET", `/projects/${id}/jobs?limit=20`)).jobs || [];
+  const el = $("#pd"), off = new Set(d.plugins.filter(g => !g.enabled).map(g => g.id));
+  d.plugins = d.plugins.filter(g => g.id !== "core");
+  el.innerHTML = `<div class="card"><div class="row"><h2 style="margin:0;flex:1">${esc(p.name)} <span class="mute mono">${p.id}</span></h2>
+      ${admin ? `<button class="x" id="pdel">프로젝트 삭제</button>` : ""}</div>
+    <h3>멤버</h3><div class="wrap"><table><tr><th>이름</th><th>종류</th><th>역할</th><th></th></tr>
+      ${d.members.map(m => `<tr data-m="${m.principal_id}"><td>${esc(m.name)}</td><td>${esc(m.kind)}</td>
+        <td>${admin ? roleSel(m.role) : ROLES[m.role]}</td><td>${admin ? `<button class="x" data-rm>제외</button>` : ""}</td></tr>`).join("")}</table></div>
+    ${admin && td.members.length ? `<div class="row"><select id="mp">${td.members.filter(m => !d.members.some(x => x.principal_id === m.principal_id))
+        .map(m => `<option value="${m.principal_id}">${esc(m.name)} (${esc(m.kind)})</option>`).join("")}</select>${roleSel(2)}<button class="p" id="madd">멤버 추가</button></div>` : ""}
+    <h3>플러그인</h3><div class="row">${d.plugins.map(g => `<label><input type="checkbox" data-g="${esc(g.id)}" ${g.enabled ? "checked" : ""} ${admin ? "" : "disabled"}> ${esc(g.id)} <span class="mute">${esc(g.version)}</span></label>`).join(" ")}</div>
+    <details><summary><b>옵션</b> <span class="mute">(프로젝트 값이 비어 있으면 상위 값 사용, 다음 작업부터 적용)</span></summary><div class="wrap"><table><tr><th>키</th><th>형식</th><th>적용 값</th><th>프로젝트 값</th><th></th></tr>
+      ${d.policies.filter(k => !off.has(k.owner)).map(k => `<tr data-k="${esc(k.key)}"><td class="mono">${esc(k.key)}</td><td class="mute">${esc(k.spec?.type || "")}${k.spec?.min != null ? ` ${k.spec.min}..${k.spec.max ?? ""}` : ""}</td>
+        <td class="mono">${esc(JSON.stringify(k.effective))}</td>
+        <td>${admin ? `<input value='${esc(k.value == null ? "" : JSON.stringify(k.value))}' placeholder="JSON, 비우면 해제" size="14">` : esc(JSON.stringify(k.value))}</td>
+        <td>${admin ? `<button data-set>저장</button>` : ""}</td></tr>`).join("")}</table></div></details>
+    ${d.webhooks ? `<h3>웹훅</h3><div class="wrap"><table><tr><th>URL</th><th>이벤트</th><th>상태</th><th></th></tr>
+      ${d.webhooks.map(w => `<tr data-w="${w.id}"><td class="mono">${esc(w.url)}</td><td>${esc(w.event_types.join(", "))}</td><td>${esc(w.status)}</td>
+        <td>${w.status === "active" ? `<button class="x" data-wd>삭제</button>` : ""}</td></tr>`).join("")}</table></div>
+      <div class="row"><input id="wu" placeholder="https://..." size="36"><input id="wt" value="knowledge.published" size="20"><button class="p" id="wadd">웹훅 추가</button></div>` : ""}
+    <h3>최근 작업</h3><div class="wrap"><table><tr><th>job</th><th>파이프라인</th><th>상태</th><th>결과</th><th>시작</th><th></th></tr>
+      ${jobs.map(j => `<tr data-j="${j.job_id}"><td class="mono">${j.job_id}</td><td>${esc(j.pipeline)}</td><td>${esc(j.status)}</td><td>${esc(j.outcome || "")}</td>
+        <td>${esc((j.created_at || "").slice(0, 19))}</td><td>${["queued", "running"].includes(j.status) ? `<button class="x" data-jc>취소</button>`
+          : ["failed", "canceled"].includes(j.status) ? `<button data-jr>재시도</button>` : ""}</td></tr>`).join("")}</table></div></div>`;
+  const re = () => project(id), on = (q, f) => el.querySelectorAll(q).forEach(b => b.addEventListener(b.tagName === "BUTTON" ? "click" : "change", () => f(b)));
+  on("[data-m] select", async s => { await api("POST", `/projects/${id}/members`, {tenant: p.tenant_id, principal: s.closest("tr").dataset.m, role: +s.value}); re(); });
+  on("[data-rm]", async b => { await api("POST", `/projects/${id}/members`, {tenant: p.tenant_id, principal: b.closest("tr").dataset.m, role: null}); re(); });
+  on("#madd", async b => { await api("POST", `/projects/${id}/members`, {tenant: p.tenant_id, principal: $("#mp").value, role: +b.previousElementSibling.value}); re(); });
+  on("[data-g]", async c => { await api("POST", `/projects/${id}/plugins/${c.dataset.g}`, {enabled: c.checked}); re(); });
+  on("[data-set]", async b => {
+    const tr = b.closest("tr"), raw = $("input", tr).value.trim(); let v = null;
+    if (raw) { try { v = JSON.parse(raw); } catch { v = raw; } }
+    const r = await api("POST", "/policies", {scope: "project", ref: id, key: tr.dataset.k, value: v}); if (r.outcome === "OK") note("저장했습니다 (다음 작업부터 적용)"); re();
+  });
+  on("#wadd", async () => { const r = await api("POST", `/projects/${id}/webhooks`, {url: $("#wu").value.trim(), event_types: $("#wt").value.split(",").map(s => s.trim()).filter(Boolean)});
+    if (r.secret) note("HMAC secret (한 번만 표시): " + r.secret); re(); });
+  on("[data-wd]", async b => { await api("DELETE", `/webhooks/${b.closest("tr").dataset.w}`, {}); re(); });
+  on("[data-jc]", async b => { await api("POST", `/jobs/${b.closest("tr").dataset.j}/cancel`, {}); re(); });
+  on("[data-jr]", async b => { await api("POST", `/jobs/${b.closest("tr").dataset.j}/retry`, {}); re(); });
+  on("#pdel", async () => { if (prompt(`삭제하려면 프로젝트 이름(${p.name})을 입력하세요. 유예 기간 뒤 완전히 지워집니다.`) !== p.name) return;
+    await api("DELETE", `/projects/${id}`, {}); projects(); });
+}
+
+// ---------- people: tenant members, persons (Keycloak link), service clients ----------
+async function people() {
+  if (!tenant || tenantRole() < 4) { $("#main").innerHTML = `<p class="mute">테넌트 관리자만 볼 수 있습니다.</p>${me.platform_admin ? newTenant() : ""}`; bindTenant(); return; }
+  const d = await api("GET", `/tenants/${tenant}`);
+  $("#main").innerHTML = `<section><h2>테넌트 멤버</h2><div class="wrap"><table><tr><th>이름</th><th>종류</th><th>역할</th><th>Keycloak 계정</th><th>클라이언트</th><th></th></tr>
+    ${d.members.map(m => `<tr data-m="${m.principal_id}"><td>${esc(m.name)} <span class="mute mono">${m.principal_id}</span></td><td>${esc(m.kind)}</td><td>${roleSel(m.role)}</td>
+      <td class="mono">${m.identities.map(i => esc(i.subject)).join("<br>") || "-"}</td>
+      <td class="mono">${m.clients.map(c => `${c.client_id} ${c.status === "active" ? `<button class="x" data-cr="${c.client_id}">폐기</button>` : "(폐기됨)"}`).join("<br>") || "-"}</td>
+      <td><button class="x" data-rm>제외</button></td></tr>`).join("")}</table></div></section>
+    <section class="card"><h2>사람 추가</h2><p class="mute">Keycloak 계정과 연결하려면 그 사람이 /admin에 Keycloak으로 로그인했을 때 보이는 issuer와 subject를 넣으세요.</p>
+      <div class="row"><input id="hn" placeholder="이름">${roleSel(1)}<input id="hi" placeholder="issuer (선택)" value="${esc(cfg.oidc?.issuer || "")}" size="30"><input id="hs" placeholder="subject (선택)" size="30"><button class="p" id="hadd">추가</button></div></section>
+    <section class="card" style="margin-top:12px"><h2>서비스 클라이언트 발급</h2><p class="mute">Open WebUI나 스크립트용입니다. secret은 한 번만 표시됩니다.</p>
+      <div class="row"><input id="sn" placeholder="이름 (예: owui)">${roleSel(2)}<button class="p" id="sadd">발급</button></div><div id="sout"></div></section>
+    ${me.platform_admin ? newTenant() : ""}`;
+  const el = $("#main"), on = (q, f) => el.querySelectorAll(q).forEach(b => b.addEventListener(b.tagName === "BUTTON" ? "click" : "change", () => f(b)));
+  on("[data-m] select", async s => { await api("POST", `/tenants/${tenant}/members`, {principal: s.closest("tr").dataset.m, role: +s.value}); people(); });
+  on("[data-rm]", async b => { if (confirm("테넌트에서 제외할까요?")) { await api("POST", `/tenants/${tenant}/members`, {principal: b.closest("tr").dataset.m, role: null}); people(); } });
+  on("[data-cr]", async b => { if (confirm("이 클라이언트를 폐기할까요? 사용 중인 연결이 끊깁니다.")) { await api("DELETE", `/clients/${b.dataset.cr}`, {}); people(); } });
+  on("#hadd", async b => { const r = await api("POST", `/tenants/${tenant}/principals`, {name: $("#hn").value.trim(), role: +$("select", b.parentElement).value,
+      issuer: $("#hs").value.trim() ? $("#hi").value.trim() : null, subject: $("#hs").value.trim() || null}); if (r.outcome === "CREATED") note("추가했습니다"); people(); });
+  on("#sadd", async b => { const r = await api("POST", `/tenants/${tenant}/clients`, {name: $("#sn").value.trim(), role: +$("select", b.parentElement).value});
+    if (r.secret) { $("#sout").innerHTML = `<p>client_id <span class="mono">${r.client_id}</span><br>secret <span class="mono">${esc(r.secret)}</span></p>`; } });
+  bindTenant();
+}
+const newTenant = () => `<section class="card" style="margin-top:12px"><h2>테넌트 만들기 (플랫폼 관리자)</h2><div class="row"><input id="tn" placeholder="테넌트 이름"><button class="p" id="tadd">만들기</button></div></section>`;
+function bindTenant() { if ($("#tadd")) $("#tadd").onclick = async () => { const r = await api("POST", "/tenants", {name: $("#tn").value.trim()}); if (r.outcome === "CREATED") { note("만들었습니다"); tenant = r.id; S.setItem("crTenant", tenant); start(); } }; }
+
+(async () => {
+  cfg = await (await fetch("/core/v1/auth/config")).json();
+  if (cfg.oidc && await kcReturn()) return start();
+  tok ? start() : loginPage();
+})();
+</script>
+</body>
+</html>

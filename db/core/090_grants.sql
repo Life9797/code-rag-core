@@ -68,3 +68,7 @@ GRANT EXECUTE ON FUNCTION runtime.approval_tick() TO maint;
 GRANT EXECUTE ON FUNCTION core.get_connector_secret(uuid, uuid, bigint, text, text) TO plugin_worker;
 GRANT SELECT ON runtime.v_queue, runtime.v_job_durations, runtime.v_breaker_state, knowledge.v_collections,
     knowledge.v_gc_backlog, core.v_plugins TO maint;
+
+-- admin page (088)
+GRANT EXECUTE ON FUNCTION core.admin_overview(uuid), core.tenant_detail(uuid, uuid), core.project_detail(uuid, uuid),
+    core.principal_for_identity(text, text) TO api;
