@@ -45,6 +45,8 @@ def main():
     for pid, m in manifests.items():
         b, db = settings.connect(f"plugin_{pid}"), settings.connect(f"plugin_{pid}")
         workers.append(Worker.load(m, SqlBinding(b), db))
+    import threading
+    threading.Thread(target=runner.webhook_loop, args=(settings.connect,), daemon=True).start()
     last_maint = 0.0
     while True:
         busy = 0
@@ -52,7 +54,7 @@ def main():
             runner.runtime_tick(settings.connect)
             for w in workers: busy += w.run_once()
             if time.time() - last_maint > float(os.environ.get("CODERAG_MAINT_S", "30")):
-                runner.maint_tick(settings.connect, manifests); last_maint = time.time()
+                runner.maint_tick(settings.connect, manifests, webhooks=False); last_maint = time.time()
         except Exception:
             log.exception("worker tick failed")
             time.sleep(5)
