@@ -1,0 +1,7 @@
+# Air-gapped overlay (OFFLINE=1 in .env, added by dc.sh): images come from the bundle (docker load), no pulls or builds.
+services:
+  postgres: { pull_policy: never }
+  init: { pull_policy: never, build: !reset null }
+  api: { pull_policy: never, build: !reset null }
+  worker: { pull_policy: never, build: !reset null }
+  embed: { pull_policy: never, environment: { HF_HUB_OFFLINE: "1" } }

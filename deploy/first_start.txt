@@ -1,0 +1,19 @@
+
+If that’s the GitHub source zip, run these from the unzipped folder on the GPU host:
+
+cp deploy/.env.example deploy/.env, then set POSTGRES_PASSWORD and DB_PASSWORD. Check that LLM_* points at your vLLM, and set WEBUI_NETWORK to your Open WebUI’s Docker network.
+Put bge-m3 in models/bge-m3. If you already run an embedding server, set EMBED_URL and leave COMPOSE_PROFILES empty.
+bash deploy/dc.sh up -d --build, then bash deploy/dc.sh ps.
+
+If it’s the offline bundle instead, just run bash repo/deploy/offline/install.sh inside it. Next comes the admin, tenant, and Open WebUI client setup, a few coreadm commands I can list for you.
+
+Next comes a one-time setup. Run it from the unzipped folder, with A="bash deploy/dc.sh run --rm init python -m coderag_core.coreadm":
+
+$A bootstrap root prints the admin id (ADMIN).
+$A init-tenant mytenant prints the tenant id (TENANT).
+$A issue-client ADMIN TENANT owui 4 prints client_id and secret once, so save them.
+Get a token: curl -s -d client_id=ID -d client_secret=SECRET localhost:8088/core/v1/token.
+Create the scratch project, with H="Authorization: Bearer TOKEN":
+curl -s -H "$H" -H 'Content-Type: application/json' -d '{"tenant":"TENANT","name":"scratch"}' localhost:8088/core/v1/projects prints its id (PID).
+Turn on the code plugin: curl -s -H "$H" -X POST localhost:8088/core/v1/projects/PID/plugins/code
+In Open WebUI, add deploy/openwebui/code_rag.py twice, once under Workspace > Functions (filter) and once under Tools. Set the valves CLIENT_ID, CLIENT_SECRET and SCRATCH_PROJECT=PID. CORE_URL defaults to http://coderag-api:8080.

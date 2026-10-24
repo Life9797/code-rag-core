@@ -1,0 +1,23 @@
+# Evaluation plugin (L-18, §35). Input: a golden set uploaded as a revision (queries *.jsonl + source archives *.zip).
+# The job's project holds the indexed sources; queries run through knowledge.search with the job creator's rights.
+id: eval
+version: 0.1.0
+contract: 1
+requires: {core: ">=0.4 <0.5"}
+entry: plugins.eval.main
+schema: plugin_eval
+migrations: migrations/
+handlers: [{name: query, kind: item}, {name: score, kind: control}, {name: purge, kind: control}]
+collections: [{key: runs}]
+pipelines:
+  - {key: run, version: 1, collection: runs, publish_mode: full, inputs: ["file_tree@^1"],
+     stages: [{key: query, kind: item, handler: query, split: {max_items: 1000, max_depth: 1}},
+              {key: score, kind: control, handler: score, depends_on: [query]}]}
+policy_keys:
+  - {key: k, type: int, min: 1, max: 20}
+  - {key: max_recall_drop, type: number, min: 0, max: 1}
+  - {key: max_p95_ms, type: number, min: 1}
+error_codes:
+  - {key: forbidden, retryable: false, health_sample: false}
+  - {key: golden_invalid, retryable: false, health_sample: false}
+hooks: {purge_project: purge}

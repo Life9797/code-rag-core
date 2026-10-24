@@ -1,0 +1,71 @@
+# code-rag v0.4 on one host (§28.2). Uses your existing vLLM and Open WebUI (memory 2026-10-19); adds postgres,
+# init (one-shot), api, worker and embed (bge-m3 on TEI, CPU). Start: cp .env.example .env; edit; bash dc.sh up -d
+# First admin: bash dc.sh run --rm init python -m coderag_core.coreadm bootstrap root; then init-tenant NAME;
+# then issue-client ADMIN TENANT NAME 4 (prints client_id + secret once). Host folders under DATA_DIR: vol/ (sources, artifacts), keys/ (JWT signing key; back it up apart from the rest).
+name: coderag04
+
+x-env: &env
+  CODERAG_DSN_BASE: host=postgres port=5432 dbname=coderag password=${DB_PASSWORD}
+  CODERAG_EMBED_URL: ${EMBED_URL-http://embed:80}       # EMBED_URL= (empty) -> stub embedder (tests only)
+  CODERAG_EMBED_API: ${EMBED_API:-tei}
+  CODERAG_EMBED_MODEL: bge-m3
+  CODERAG_EMBED_MODEL_ID: ${EMBED_MODEL_ID:-bge-m3@main}
+  CODERAG_LLM_URL: ${LLM_URL:-}
+  CODERAG_LLM_MODEL: ${LLM_SERVED_NAME:-}
+  CODERAG_LLM_REVISION: ${LLM_REVISION:-}
+  CODERAG_LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-2048}
+  CODERAG_LLM_JSON_MODE: ${LLM_JSON_MODE:-0}
+  CODERAG_LLM_REASONING_EFFORT: ${LLM_REASONING_EFFORT:-low}
+  CODERAG_OIDC_ISSUER: ${OIDC_ISSUER:-}
+  CODERAG_OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-coderag-admin}
+  CODERAG_OIDC_AUDIENCE: ${OIDC_AUDIENCE:-}
+  CODERAG_OIDC_JWKS_URL: ${OIDC_JWKS_URL:-}
+
+x-app: &app
+  build: { context: .., dockerfile: deploy/Dockerfile }
+  image: coderag-core:0.4
+  user: "1000:1000"
+  volumes: ["../plugins:/app/plugins:ro", "${DATA_DIR:-../data}/vol:/data/vol", "${DATA_DIR:-../data}/keys:/data/keys"]
+  extra_hosts: ["host.docker.internal:host-gateway"]
+  restart: unless-stopped
+
+services:
+  postgres:
+    image: ${PG_IMAGE:-pgvector/pgvector:0.8.1-pg18}
+    environment: { POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}", POSTGRES_DB: coderag }
+    volumes: [pgdata:/var/lib/postgresql]
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U postgres -d coderag"], interval: 5s, retries: 30 }
+    restart: unless-stopped
+
+  init:
+    <<: *app
+    command: ["python", "-m", "coderag_core", "init"]
+    environment:
+      <<: *env
+      CODERAG_ADMIN_DSN: host=postgres port=5432 dbname=coderag user=postgres password=${POSTGRES_PASSWORD}
+      CODERAG_DB_PASSWORD: ${DB_PASSWORD}
+    depends_on: { postgres: { condition: service_healthy } }
+    restart: "no"
+
+  api:
+    <<: *app
+    command: ["python", "-m", "coderag_core", "api", "--port", "8080"]
+    environment: *env
+    ports: ["${API_PORT:-8088}:8080"]
+    depends_on: { init: { condition: service_completed_successfully } }
+
+  worker:
+    <<: *app
+    command: ["python", "-m", "coderag_core", "worker"]
+    environment: *env
+    depends_on: { init: { condition: service_completed_successfully } }
+
+  embed:                       # profile embed (COMPOSE_PROFILES=embed in .env); leave it out when EMBED_URL points elsewhere
+    profiles: [embed]
+    image: ${EMBED_IMAGE:-ghcr.io/huggingface/text-embeddings-inference:cpu-1.8}
+    command: --model-id /models/bge-m3 --max-client-batch-size 64
+    volumes: ["${MODELS_DIR:-../models}:/models:ro"]
+    healthcheck: { test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/80' || exit 1"], interval: 10s, retries: 60 }
+    restart: unless-stopped
+
+volumes: { pgdata: {} }
